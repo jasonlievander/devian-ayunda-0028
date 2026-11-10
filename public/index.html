@@ -1,0 +1,662 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Formulir pengajuan reservasi ruang kampus IDB Bali dengan alokasi slot tanpa bentrok."
+    />
+    <meta name="theme-color" content="#004C60" />
+    <title>Ajukan Reservasi — IDB Bali</title>
+    <script>
+      (() => {
+        try {
+          const role = sessionStorage.getItem("idb-role");
+          if (role !== "form" && role !== "admin") {
+            location.replace("/login");
+          }
+        } catch {
+          location.replace("/login");
+        }
+      })();
+    </script>
+    <link rel="preload" href="/fonts/archivo-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/public-sans-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Lewati ke konten</a>
+
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="/">
+          <span class="brand-badge">
+            <img src="/assets/idb-mark.png" alt="" width="44" height="44" />
+          </span>
+          <span class="brand-text">
+            <span class="brand-name">IDB Bali</span>
+            <span class="brand-sub">Reservasi Ruang</span>
+          </span>
+        </a>
+        <div class="header-meta">
+          <span class="header-pill">Fase alokasi</span>
+          <span class="header-note">PRD 1.0</span>
+          <nav class="site-nav" aria-label="Bagian utama">
+            <a class="header-link" href="#reservation" aria-current="page">Formulir</a>
+            <a class="header-link" href="#kalender">Kalender</a>
+            <a class="header-link" href="#admin">Panel petugas</a>
+            <button type="button" class="header-link header-logout" id="logout-session">
+              Keluar
+            </button>
+          </nav>
+        </div>
+      </div>
+    </header>
+
+    <main id="main" tabindex="-1">
+      <section id="view-reservation">
+        <section class="hero" aria-labelledby="page-title">
+        <div class="hero-inner">
+          <div class="hero-copy">
+            <p class="kicker">Peminjaman ruang kampus</p>
+            <h1 id="page-title" tabindex="-1">
+              Satu ruang.<br />
+              Satu pemakai.<br />
+              <span>Satu waktu.</span>
+            </h1>
+            <p class="lede">
+              Ajukan slot, dan sistem mengunci waktunya untuk Anda — atau
+              menolak dengan alasan yang jelas. Semua waktu dalam WITA.
+            </p>
+            <div class="hero-actions">
+              <a class="hero-cta" href="#reservation">
+                Ajukan reservasi <span aria-hidden="true">→</span>
+              </a>
+              <a class="hero-link" href="#kalender">Lihat kalender</a>
+            </div>
+            <ul class="hero-facts">
+              <li><strong>0</strong><span>bentrok</span></li>
+              <li><strong>30</strong><span>menit per slot</span></li>
+              <li><strong>WITA</strong><span>zona waktu</span></li>
+            </ul>
+          </div>
+          <div class="hero-art" aria-hidden="true">
+            <div class="hero-seal">
+              <span class="hero-seal-label">IDB Bali</span>
+              <img
+                class="hero-mark"
+                src="/assets/idb-crest.png"
+                alt=""
+                width="288"
+                height="288"
+              />
+              <span class="hero-seal-label hero-seal-label-bottom">Reservasi ruang</span>
+              <span class="hero-stamp">
+                <strong>0</strong>
+                <span>bentrok</span>
+              </span>
+            </div>
+            <p class="hero-note">Satu ruang, satu pemakai.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="page-body">
+        <div class="layout">
+          <section id="reservation" class="form-panel" aria-labelledby="form-title">
+            <div class="section-head">
+              <h2 id="form-title">Formulir pengajuan</h2>
+              <p class="meta">01 / Pengajuan</p>
+            </div>
+
+            <form id="reservation-form" novalidate>
+              <div class="field">
+                <label for="room">Ruang</label>
+                <select id="room" name="room" required aria-describedby="room-hint room-desc"></select>
+                <p class="hint" id="room-hint"></p>
+                <p class="room-desc" id="room-desc"></p>
+              </div>
+
+              <fieldset class="field requester-fieldset">
+                <legend>Pemohon</legend>
+                <div class="pair">
+                  <div class="field">
+                    <label for="nama">Nama lengkap</label>
+                    <input
+                      type="text"
+                      id="nama"
+                      name="nama"
+                      autocomplete="name"
+                      required
+                      aria-describedby="nama-error"
+                    />
+                    <p class="field-error" id="nama-error" hidden></p>
+                  </div>
+                  <div class="field">
+                    <label for="nim">NIM</label>
+                    <input
+                      type="text"
+                      id="nim"
+                      name="nim"
+                      inputmode="numeric"
+                      pattern="[0-9]*"
+                      autocomplete="off"
+                      required
+                      aria-describedby="nim-hint nim-error"
+                    />
+                    <p class="hint" id="nim-hint">5–20 digit angka.</p>
+                    <p class="field-error" id="nim-error" hidden></p>
+                  </div>
+                </div>
+                <p class="hint">
+                  Identitas dicatat pada reservasi. Login institusi belum aktif.
+                </p>
+              </fieldset>
+
+              <fieldset class="field time-fieldset">
+                <legend>Waktu</legend>
+                <div class="time-grid">
+                  <div class="field field-date">
+                    <label for="date">Tanggal</label>
+                    <input type="date" id="date" name="date" required aria-describedby="date-error" />
+                    <p class="field-error" id="date-error" hidden></p>
+                  </div>
+                  <div class="field">
+                    <label for="start">Mulai</label>
+                    <select id="start" name="start" required aria-describedby="time-hint time-error"></select>
+                  </div>
+                  <div class="field">
+                    <label for="end">Selesai</label>
+                    <select id="end" name="end" required aria-describedby="time-hint time-error"></select>
+                  </div>
+                </div>
+                <p class="hint" id="time-hint">
+                  Slot 30 menit. Sabtu tutup 14.00; Minggu perlu persetujuan petugas.
+                </p>
+                <p class="field-error" id="time-error" hidden></p>
+                <button type="button" class="inline-action" id="conflict-action" hidden>
+                  Pilih ruang lain
+                </button>
+              </fieldset>
+
+              <div class="pair">
+                <div class="field">
+                  <label for="purpose">Keperluan</label>
+                  <select id="purpose" name="purpose" required>
+                    <option value="belajar kelompok">Belajar kelompok</option>
+                    <option value="rapat">Rapat</option>
+                    <option value="latihan">Latihan</option>
+                    <option value="kelas pengganti">Kelas pengganti</option>
+                    <option value="acara">Acara</option>
+                    <option value="lainnya">Lainnya</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="participants">Jumlah peserta</label>
+                  <input
+                    type="number"
+                    id="participants"
+                    name="participants"
+                    min="1"
+                    step="1"
+                    value="6"
+                    inputmode="numeric"
+                    required
+                    aria-describedby="capacity-hint participants-error"
+                  />
+                  <p class="hint" id="capacity-hint"></p>
+                  <p class="field-error" id="participants-error" hidden></p>
+                </div>
+              </div>
+
+
+              <div class="form-foot">
+                <button class="btn-primary" type="submit" id="submit">
+                  Ajukan reservasi
+                </button>
+                <p class="hint form-status" id="form-status" aria-live="polite"></p>
+              </div>
+
+              <div class="alert" id="error-summary" role="alert" tabindex="-1" hidden></div>
+            </form>
+          </section>
+
+          <aside class="rail" aria-labelledby="rail-title">
+            <h2 id="rail-title" class="visually-hidden">Hasil pengajuan</h2>
+
+            <div id="idle-state" class="idle">
+              <p class="kicker">Slip reservasi</p>
+              <p class="idle-copy">Slip akan muncul di sini setelah pengajuan berhasil.</p>
+              <ol class="rules">
+                <li>
+                  <span class="rule-num">01</span>
+                  <p>Minimal 30 menit, kelipatan 30 menit.</p>
+                </li>
+                <li>
+                  <span class="rule-num">02</span>
+                  <p>Peserta tidak boleh melebihi kapasitas ruang.</p>
+                </li>
+                <li>
+                  <span class="rule-num">03</span>
+                  <p>Slot yang menunggu persetujuan tetap ditahan untuk Anda.</p>
+                </li>
+              </ol>
+              <p class="stub-note" aria-hidden="true">IDB / RUANG / 2026</p>
+            </div>
+
+            <div id="result" hidden>
+              <article class="slip" aria-labelledby="slip-room" tabindex="-1">
+                <header class="slip-head">
+                  <p class="slip-brand">IDB Bali · Izin ruang</p>
+                  <p class="stamp" id="slip-status"></p>
+                </header>
+
+                <p class="slip-label">ID reservasi</p>
+                <p class="slip-id" id="slip-id"></p>
+
+                <h3 class="slip-room" id="slip-room"></h3>
+
+                <dl class="slip-grid">
+                  <div>
+                    <dt>Tanggal</dt>
+                    <dd id="slip-date"></dd>
+                  </div>
+                  <div>
+                    <dt>Waktu</dt>
+                    <dd id="slip-time"></dd>
+                  </div>
+                  <div>
+                    <dt>Peserta</dt>
+                    <dd id="slip-participants"></dd>
+                  </div>
+                  <div>
+                    <dt>Keperluan</dt>
+                    <dd id="slip-purpose"></dd>
+                  </div>
+                  <div>
+                    <dt>Pemohon</dt>
+                    <dd id="slip-name"></dd>
+                  </div>
+                  <div>
+                    <dt>NIM</dt>
+                    <dd id="slip-nim"></dd>
+                  </div>
+                </dl>
+
+                <div class="perforation" aria-hidden="true"></div>
+
+                <footer class="slip-foot">
+                  <p id="slip-note"></p>
+                  <button type="button" class="btn-ghost" id="reset">Ajukan lagi</button>
+                </footer>
+              </article>
+            </div>
+          </aside>
+        </div>
+
+        <section id="kalender" class="calendar-section" aria-labelledby="calendar-title">
+          <div class="section-head">
+            <h2 id="calendar-title" tabindex="-1">Kalender peminjaman</h2>
+            <p class="meta">02 / Jadwal</p>
+          </div>
+          <p class="calendar-lede">
+            Lihat slot yang sudah diajukan atau diblokir. Jadwal berstatus
+            menunggu tetap menahan slot; nama dan NIM pemohon tidak
+            ditampilkan di kalender publik.
+          </p>
+
+          <div class="calendar-filter">
+            <label for="calendar-room">Filter berdasarkan ruang</label>
+            <select id="calendar-room"></select>
+          </div>
+
+          <div class="calendar-toolbar">
+            <div class="calendar-nav" role="group" aria-label="Navigasi periode">
+              <button type="button" id="calendar-prev" aria-label="Periode sebelumnya">
+                <span aria-hidden="true">←</span>
+              </button>
+              <button type="button" class="calendar-today" id="calendar-today">Hari ini</button>
+              <button type="button" id="calendar-next" aria-label="Periode berikutnya">
+                <span aria-hidden="true">→</span>
+              </button>
+            </div>
+            <p class="calendar-period" id="calendar-period" aria-live="polite"></p>
+            <div class="calendar-views" role="group" aria-label="Tampilan kalender">
+              <button type="button" data-view="month" aria-pressed="true">Bulan</button>
+              <button type="button" data-view="week" aria-pressed="false">Minggu</button>
+              <button type="button" data-view="day" aria-pressed="false">Hari</button>
+              <button type="button" data-view="list" aria-pressed="false">Daftar</button>
+            </div>
+          </div>
+
+          <ul class="calendar-legend" aria-label="Legenda status">
+            <li><span class="calendar-key is-disetujui" aria-hidden="true"></span>Disetujui</li>
+            <li><span class="calendar-key is-menunggu" aria-hidden="true"></span>Menunggu</li>
+            <li><span class="calendar-key is-berlangsung" aria-hidden="true"></span>Berlangsung</li>
+            <li><span class="calendar-key is-blokir" aria-hidden="true"></span>Blokir</li>
+          </ul>
+
+          <p class="calendar-status" id="calendar-status" role="status"></p>
+          <div class="calendar-stage" id="calendar-stage"></div>
+          <p class="calendar-note hint">
+            Waktu ditampilkan dalam WITA. Kalender hanya memuat reservasi aktif
+            dan blokir ruang. Di layar lebar, Bulan/Minggu adalah ringkasan;
+            Hari/Daftar menampilkan detail lengkap.
+          </p>
+        </section>
+
+        <section class="catalog" aria-labelledby="catalog-title">
+          <div class="section-head">
+            <h2 id="catalog-title">Daftar ruang</h2>
+            <p class="meta">03 / Daftar</p>
+          </div>
+          <p class="catalog-lede">
+            Daftar ruang mengikuti form peminjaman IDB Bali. Kapasitas yang
+            belum dipublikasikan akan diverifikasi petugas. Kebijakan akses
+            memakai default PRD (perlu persetujuan) sampai dikonfirmasi. Opsi
+            <em>Yang lain</em> tidak dimasukkan karena bukan nama ruang.
+          </p>
+          <ul class="catalog-list" id="catalog-list"></ul>
+          <p class="catalog-source">
+            Sumber: daftar nama ruangan dari form peminjaman IDB Bali;
+            deskripsi fasilitas dari
+            <a href="https://www.idbbali.ac.id/fasilitas-kampus/" rel="noreferrer"
+              >idbbali.ac.id/fasilitas-kampus</a
+            >
+            (arsip 17 Oktober 2026). Foto ruang: dokumentasi fasilitas dan
+            kegiatan IDB Bali dari
+            <a href="https://www.idbbali.ac.id/" rel="noreferrer">idbbali.ac.id</a
+            >; label pada foto menandai konteks bangunan, kegiatan, atau ilustrasi kampus. Satu foto dapat mewakili beberapa ruang sejenis.
+          </p>
+        </section>
+      </div>
+      </section>
+
+      <section id="view-admin" hidden>
+        <div class="admin-main">
+<section id="gate" class="admin-gate" aria-labelledby="gate-title">
+        <p class="kicker">Akses petugas</p>
+        <h1 id="gate-title">Panel persetujuan</h1>
+        <p class="lede">
+          Masukkan kode akses petugas untuk melihat dan mengelola pengajuan
+          ruang dari mahasiswa.
+        </p>
+
+        <form id="gate-form" class="gate-form" method="post" novalidate>
+          <div class="field">
+            <label for="admin-code">Kode akses</label>
+            <input
+              type="password"
+              id="admin-code"
+              name="admin-code"
+              autocomplete="current-password"
+              required
+              aria-describedby="gate-error"
+            />
+            <p class="field-error" id="gate-error" hidden></p>
+          </div>
+          <button type="submit" class="btn-primary" id="gate-submit">
+            Buka panel
+          </button>
+        </form>
+
+        <p class="hint admin-gate-note">
+          Kode akses dikelola oleh petugas Sarana Prasarana. Ini pembatas demo,
+          bukan autentikasi produksi.
+        </p>
+      </section>
+
+      <section id="dashboard" hidden aria-labelledby="admin-title">
+        <header class="admin-head">
+          <div>
+            <p class="kicker">Panel petugas</p>
+            <h1 id="admin-title" tabindex="-1">Reservasi ruang</h1>
+            <p class="admin-sub">
+              Setujui pengajuan, kelola reservasi, blokir ruang, dan tinjau
+              audit dari satu tempat.
+            </p>
+          </div>
+          <div class="admin-stats-grid" aria-live="polite">
+            <div class="stat">
+              <strong id="stat-pending">0</strong>
+              <span>menunggu</span>
+            </div>
+            <div class="stat">
+              <strong id="stat-approved">0</strong>
+              <span>disetujui hari ini</span>
+            </div>
+            <div class="stat">
+              <strong id="stat-rooms">0</strong>
+              <span>ruang terpakai hari ini</span>
+            </div>
+            <div class="stat">
+              <strong id="stat-total">0</strong>
+              <span>total ruang aktif</span>
+            </div>
+          </div>
+        </header>
+
+        <div class="admin-toolbar">
+          <div class="tabs" role="group" aria-label="Bagian panel petugas">
+            <button type="button" data-tab="approval" aria-pressed="true">
+              Persetujuan
+            </button>
+            <button type="button" data-tab="all" aria-pressed="false">
+              Semua reservasi
+            </button>
+            <button type="button" data-tab="blocks" aria-pressed="false">
+              Blokir ruang
+            </button>
+            <button type="button" data-tab="audit" aria-pressed="false">
+              Audit
+            </button>
+          </div>
+          <div class="admin-toolbar-actions">
+            <span class="live-note" id="last-updated">Diperbarui —</span>
+            <button type="button" class="btn-ghost btn-small" id="refresh">
+              Muat ulang
+            </button>
+            <button type="button" class="btn-ghost btn-small" id="logout">
+              Ganti kode
+            </button>
+          </div>
+        </div>
+
+        <p class="admin-status" id="admin-status" aria-live="polite"></p>
+
+        <div class="admin-error alert" id="admin-error" role="alert" hidden>
+          <p id="admin-error-message"></p>
+          <button type="button" class="inline-action" id="admin-error-retry" hidden>
+            Coba lagi
+          </button>
+        </div>
+
+        <section id="panel-approval" class="admin-panel" aria-labelledby="approval-title">
+          <div class="panel-head">
+            <div>
+              <h2 id="approval-title">Menunggu persetujuan</h2>
+              <p class="hint">
+                Setujui atau tolak. Penolakan wajib disertai alasan.
+              </p>
+            </div>
+          </div>
+          <ul class="request-list" id="approval-list"></ul>
+          <div class="admin-empty" id="approval-empty" hidden>
+            <p class="kicker">Antrean bersih</p>
+            <p>Tidak ada pengajuan menunggu.</p>
+          </div>
+        </section>
+
+        <section id="panel-all" class="admin-panel" aria-labelledby="all-title" hidden>
+          <div class="panel-head">
+            <div>
+              <h2 id="all-title">Semua reservasi</h2>
+              <p class="hint">Cari berdasarkan nama, NIM, ID, atau ruang.</p>
+            </div>
+          </div>
+
+          <form class="admin-filters" id="filter-form">
+            <div class="field">
+              <label for="filter-status">Status</label>
+              <select id="filter-status">
+                <option value="semua">Semua</option>
+                <option value="menunggu">Menunggu</option>
+                <option value="disetujui">Disetujui</option>
+                <option value="ditolak">Ditolak</option>
+                <option value="dibatalkan">Dibatalkan</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="filter-query">Cari</label>
+              <input
+                type="search"
+                id="filter-query"
+                placeholder="Nama, NIM, ID, ruang"
+              />
+            </div>
+            <div class="field">
+              <label for="filter-date">Tanggal</label>
+              <input type="date" id="filter-date" />
+            </div>
+            <div class="filter-actions">
+              <button type="submit" class="btn-primary btn-small">Terapkan</button>
+              <button type="button" class="btn-ghost btn-small" id="filter-reset">
+                Reset
+              </button>
+            </div>
+          </form>
+
+          <ul class="request-list" id="all-list"></ul>
+          <div class="admin-empty" id="all-empty" hidden>
+            <p class="kicker">Tidak ditemukan</p>
+            <p>Tidak ada reservasi yang cocok dengan filter.</p>
+          </div>
+        </section>
+
+        <section id="panel-blocks" class="admin-panel" aria-labelledby="blocks-title" hidden>
+          <div class="panel-head">
+            <div>
+              <h2 id="blocks-title">Blokir ruang</h2>
+              <p class="hint">
+                Blokir mengalahkan reservasi. Reservasi yang beririsan akan
+                dibatalkan otomatis dan dicatat di audit.
+              </p>
+            </div>
+          </div>
+
+          <div class="admin-grid">
+            <form class="block-form" id="block-form" novalidate>
+              <div class="field">
+                <label for="block-room">Ruang</label>
+                <select id="block-room" required></select>
+              </div>
+              <div class="field">
+                <label for="block-date">Tanggal</label>
+                <input type="date" id="block-date" required />
+              </div>
+              <div class="pair">
+                <div class="field">
+                  <label for="block-start">Mulai</label>
+                  <input type="time" id="block-start" step="1800" required />
+                </div>
+                <div class="field">
+                  <label for="block-end">Selesai</label>
+                  <input type="time" id="block-end" step="1800" required />
+                </div>
+              </div>
+              <div class="field">
+                <label for="block-reason">Alasan blokir</label>
+                <textarea
+                  id="block-reason"
+                  rows="3"
+                  maxlength="500"
+                  required
+                  placeholder="Perawatan, ujian, acara kampus…"
+                ></textarea>
+              </div>
+              <p class="field-error" id="block-error" hidden></p>
+              <button type="submit" class="btn-primary" id="block-submit">
+                Buat blokir
+              </button>
+            </form>
+
+            <div>
+              <h3 class="panel-subtitle">Blokir mendatang</h3>
+              <ul class="block-list" id="block-list"></ul>
+              <div class="admin-empty" id="block-empty" hidden>
+                <p class="kicker">Belum ada blokir</p>
+                <p>Tidak ada blokir ruang mendatang.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="panel-audit" class="admin-panel" aria-labelledby="audit-title" hidden>
+          <div class="panel-head">
+            <div>
+              <h2 id="audit-title">Audit reservasi</h2>
+              <p class="hint">Perubahan status terbaru, termasuk alasan.</p>
+            </div>
+          </div>
+          <ul class="event-list" id="event-list"></ul>
+          <div class="admin-empty" id="event-empty" hidden>
+            <p class="kicker">Belum ada aktivitas</p>
+            <p>Audit akan muncul setelah ada pengajuan.</p>
+          </div>
+        </section>
+      </section>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-inner">
+        <div class="footer-brand">
+          <span class="footer-badge">
+            <img src="/assets/idb-mark.png" alt="" width="32" height="32" />
+          </span>
+          <p>IDB Bali Reservation<br /><span>Fase alokasi slot</span></p>
+        </div>
+        <p class="footer-meta">Data demo sintetis · Tidak ada data nyata</p>
+      </div>
+    </footer>
+
+    <p class="visually-hidden" id="announcer" aria-live="polite"></p>
+
+    <dialog id="reason-dialog" class="admin-dialog" aria-labelledby="reason-title">
+      <form method="dialog" id="reason-form">
+        <p class="kicker" id="reason-kicker">Tolak pengajuan</p>
+        <h2 id="reason-title">Tolak pengajuan</h2>
+        <p class="hint" id="reason-hint">Alasan akan diteruskan ke pemohon.</p>
+
+        <div class="field">
+          <label for="reason-input" id="reason-label">Alasan penolakan</label>
+          <textarea
+            id="reason-input"
+            name="reason"
+            rows="4"
+            maxlength="500"
+            required
+            aria-describedby="reason-error"
+          ></textarea>
+          <p class="field-error" id="reason-error" hidden></p>
+        </div>
+
+        <div class="dialog-actions">
+          <button type="button" class="btn-ghost" id="reason-cancel">
+            Batalkan
+          </button>
+          <button type="submit" class="btn-danger" id="reason-submit">
+            Tolak pengajuan
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <p class="visually-hidden" id="admin-announcer" aria-live="polite"></p>
+    <script src="/app.js?v=20261028b" defer></script>
+    <script src="/calendar.js?v=20261028c" defer></script>
+    <script src="/admin.js?v=20261028c" defer></script>
+  </body>
+</html>

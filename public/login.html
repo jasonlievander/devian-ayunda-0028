@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Masuk ke formulir reservasi atau panel petugas IDB Bali."
+    />
+    <meta name="theme-color" content="#004C60" />
+    <title>Masuk — IDB Bali</title>
+    <link rel="preload" href="/fonts/archivo-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/public-sans-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/login.css" />
+  </head>
+  <body class="login-page">
+    <a class="skip-link" href="#login-form">Lewati ke formulir masuk</a>
+
+    <main id="login-main" class="login-shell">
+      <section class="login-visual" aria-labelledby="login-visual-title">
+        <img
+          class="login-photo"
+          id="login-photo"
+          src="/assets/login-campus.webp"
+          alt="Gedung kampus IDB Bali dengan papan nama IDB Bali"
+          width="800"
+          height="600"
+        />
+        <div class="login-visual-content">
+          <a class="login-brand" href="/login">
+            <span class="login-brand-mark">
+              <img src="/assets/idb-crest.png" alt="" width="34" height="34" />
+            </span>
+            <span class="login-brand-text">
+              <strong>IDB Bali</strong>
+              <span>Reservasi Ruang</span>
+            </span>
+          </a>
+
+          <div class="login-visual-copy">
+            <p class="kicker">Institut Desain &amp; Bisnis Bali</p>
+            <h1 id="login-visual-title">
+              Satu ruang.<br />
+              <span>Satu waktu.</span>
+            </h1>
+            <p class="login-visual-lede" id="login-visual-lede">
+              Ajukan slot, cek kalender, dan kelola peminjaman ruang kampus
+              dalam satu alur.
+            </p>
+            <p class="login-credit" id="login-credit">Aula IDB Bali · dokumentasi kampus</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="login-panel" aria-labelledby="login-title">
+        <div class="login-card">
+          <div class="login-role-switch" role="group" aria-label="Pilih jenis akses">
+            <button type="button" data-role="form" aria-pressed="true">
+              Formulir mahasiswa
+            </button>
+            <button type="button" data-role="admin" aria-pressed="false">
+              Panel petugas
+            </button>
+          </div>
+
+          <span class="login-icon" id="login-icon-form" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <rect x="5" y="10" width="14" height="10" rx="2"></rect>
+              <path d="M8 10V7a4 4 0 0 1 8 0v3"></path>
+              <circle cx="12" cy="15" r="1"></circle>
+            </svg>
+          </span>
+          <span class="login-icon" id="login-icon-admin" aria-hidden="true" hidden>
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"></path>
+              <path d="M9 12l2 2 4-4"></path>
+            </svg>
+          </span>
+
+          <p class="kicker" id="login-kicker">Akses mahasiswa</p>
+          <h2 id="login-title">Masuk ke formulir</h2>
+          <p class="login-lede" id="login-lede">
+            Gunakan password formulir untuk mengajukan peminjaman ruang.
+          </p>
+
+          <form id="login-form" tabindex="-1" novalidate>
+            <div class="login-credentials" id="form-credentials">
+              <div class="field">
+                <label for="login-email">Email</label>
+                <input
+                  type="email"
+                  id="login-email"
+                  name="email"
+                  autocomplete="username"
+                  required
+                  aria-describedby="login-hint login-error"
+                />
+              </div>
+              <div class="field">
+                <div class="login-label-row">
+                  <label for="login-nim">NIM</label>
+                  <span class="login-label-meta">6 digit</span>
+                </div>
+                <input
+                  type="text"
+                  id="login-nim"
+                  name="nim"
+                  inputmode="numeric"
+                  pattern="[0-9]*"
+                  maxlength="20"
+                  autocomplete="off"
+                  required
+                  aria-describedby="login-hint login-error"
+                />
+              </div>
+            </div>
+
+            <div class="field" id="admin-credentials" hidden>
+              <div class="login-label-row">
+                <label for="login-password" id="login-label">Password petugas</label>
+                <span class="login-label-meta">Akses terbatas</span>
+              </div>
+              <div class="login-password">
+                <input
+                  type="password"
+                  id="login-password"
+                  name="password"
+                  autocomplete="current-password"
+                  aria-describedby="login-hint login-error"
+                />
+                <button type="button" id="login-toggle" aria-pressed="false">
+                  Lihat
+                </button>
+              </div>
+            </div>
+
+            <p class="hint" id="login-hint">
+              Gunakan email dan NIM akun mahasiswa.
+            </p>
+            <p class="field-error" id="login-error" role="alert" hidden></p>
+
+            <button class="login-submit" type="submit" id="login-submit">
+              <span id="login-submit-label">Masuk ke formulir</span>
+              <span aria-hidden="true">→</span>
+            </button>
+          </form>
+
+          <p class="login-demo" id="login-demo">
+            Akses demo internal. Hubungi petugas Sarana Prasarana bila password
+            tidak tersedia.
+          </p>
+          <p class="visually-hidden" id="login-status" role="status" aria-live="polite"></p>
+        </div>
+      </section>
+    </main>
+
+    <script src="/login.js?v=20261028c" defer></script>
+  </body>
+</html>
