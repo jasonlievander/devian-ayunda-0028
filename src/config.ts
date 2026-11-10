@@ -1,8 +1,8 @@
 export const config = {
-  adminCode: process.env.ADMIN_CODE ?? "idbbali",
-  formCode: process.env.FORM_CODE ?? "12345",
-  formEmail: process.env.FORM_EMAIL ?? "akumahasiswa2gmail.com",
-  formNim: process.env.FORM_NIM ?? "123456",
+  adminCode: "idbbali",
+  formCode: "12345",
+  formEmail: "akumahasiswa2gmail.com",
+  formNim: "123456",
   time: {
     timezone: "Asia/Makassar",
     witaOffsetMinutes: 480,

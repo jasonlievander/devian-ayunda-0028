@@ -26,6 +26,7 @@ import {
 import { listCalendar, type CalendarEvent } from "../application/calendar";
 import { config } from "../config";
 import { DomainError, validationError } from "../domain/errors";
+import { DEMO_ADMIN, DEMO_STUDENT } from "../infrastructure/demo-seed";
 import type { MemoryStore } from "../infrastructure/memory-store";
 import { EventHub } from "./event-hub";
 
@@ -254,6 +255,7 @@ export function createApp(deps: AppDependencies): FastifyInstance {
     const email = typeof input.email === "string" ? input.email.trim() : "";
     const nim = typeof input.nim === "string" ? input.nim.trim() : "";
     const password = typeof input.password === "string" ? input.password : "";
+    const normalizedEmail = email.toLowerCase();
     const users = await deps.store.read((state) => state.users);
 
     if (role === "form") {
@@ -263,32 +265,36 @@ export function createApp(deps: AppDependencies): FastifyInstance {
       if (nim === "" && password === "") {
         throw validationError("NIM atau password wajib diisi", "nim");
       }
-      const normalizedEmail = email.toLowerCase();
       const expectedEmail = config.formEmail.trim().toLowerCase();
       const acceptedEmails = expectedEmail.includes("@")
         ? [expectedEmail]
         : [expectedEmail, expectedEmail.replace(/gmail\.com$/, "@gmail.com")];
-      const legacyEmail = acceptedEmails.some((candidate) =>
-        safeEqual(normalizedEmail, candidate),
+      const legacyEmail = acceptedEmails.some(
+        (candidate) => candidate === normalizedEmail,
       );
       const legacyMatch =
         legacyEmail &&
-        ((nim !== "" && safeEqual(nim, config.formNim)) ||
-          (nim === "" && password !== "" && safeEqual(password, config.formNim)));
+        ((nim !== "" && nim === config.formNim) ||
+          (nim === "" && password !== "" && password === config.formNim));
+
+      const demoMatch =
+        normalizedEmail === DEMO_STUDENT.email.toLowerCase() &&
+        ((nim !== "" && nim === DEMO_STUDENT.nim) ||
+          (password !== "" && password === DEMO_STUDENT.password));
 
       const seeded = users.find(
         (user) =>
-          user.email.toLowerCase() === normalizedEmail &&
+          user.email.trim().toLowerCase() === normalizedEmail &&
           user.status === "aktif",
       );
       const seededMatch =
         seeded !== undefined &&
-        ((nim !== "" && seeded.nim !== null && safeEqual(nim, seeded.nim)) ||
+        ((nim !== "" && seeded.nim !== null && nim === seeded.nim.trim()) ||
           (password !== "" &&
             seeded.password !== undefined &&
-            safeEqual(password, seeded.password)));
+            password === seeded.password));
 
-      if (!legacyMatch && !seededMatch) {
+      if (!legacyMatch && !demoMatch && !seededMatch) {
         throw new DomainError("UNAUTHORIZED", "Email atau NIM salah", 401);
       }
       return reply.send({ data: { role } });
@@ -297,18 +303,21 @@ export function createApp(deps: AppDependencies): FastifyInstance {
     if (password === "") {
       throw validationError("Password wajib diisi", "password");
     }
-    const normalizedEmail = email.toLowerCase();
-    const codeMatch = safeEqual(password, config.adminCode);
+    const codeMatch = password === config.adminCode;
+    const demoMatch =
+      password === DEMO_ADMIN.password &&
+      (normalizedEmail === "" ||
+        normalizedEmail === DEMO_ADMIN.email.toLowerCase());
     const staffMatch = users.some(
       (user) =>
         ["admin", "petugas"].includes(user.peran) &&
         user.status === "aktif" &&
         user.password !== undefined &&
-        safeEqual(password, user.password) &&
+        password === user.password &&
         (normalizedEmail === "" ||
-          safeEqual(normalizedEmail, user.email.toLowerCase())),
+          normalizedEmail === user.email.trim().toLowerCase()),
     );
-    if (!codeMatch && !staffMatch) {
+    if (!codeMatch && !demoMatch && !staffMatch) {
       throw new DomainError("UNAUTHORIZED", "Password salah", 401);
     }
     return reply.send({ data: { role } });

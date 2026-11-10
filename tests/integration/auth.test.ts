@@ -47,6 +47,26 @@ describe("login formulir dan petugas", () => {
     expect(response.json()).toEqual({ data: { role: "admin" } });
   });
 
+  it("menerima akun mahasiswa demo tanpa seed di penyimpanan", async () => {
+    const response = await login({
+      role: "form",
+      email: "  Mahasiswa@IDBBali.ac.id  ",
+      nim: " 123456 ",
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ data: { role: "form" } });
+  });
+
+  it("menerima akun admin demo tanpa seed di penyimpanan", async () => {
+    const response = await login({
+      role: "admin",
+      email: " Admin@IDBBali.ac.id ",
+      password: "idbbali",
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ data: { role: "admin" } });
+  });
+
   it("menolak email atau NIM yang salah", async () => {
     const wrongEmail = await login({
       role: "form",
