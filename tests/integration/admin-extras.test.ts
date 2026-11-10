@@ -22,7 +22,7 @@ let app: ReturnType<typeof createApp>;
 
 beforeAll(async () => {
   db = await startTestDb();
-  app = createApp({ pool: db.pool, now: () => NOW });
+  app = createApp({ store: db.store, now: () => NOW });
   await app.ready();
 });
 
@@ -32,7 +32,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await resetDb(db.pool);
+  await resetDb(db.store);
 });
 
 async function seedPending(
@@ -41,7 +41,7 @@ async function seedPending(
   end: string,
   options: { nama?: string; nim?: string; key?: string } = {},
 ): Promise<bigint> {
-  const result = await allocateSlot(db.pool, {
+  const result = await allocateSlot(db.store, {
     roomId,
     pemohonNama: options.nama ?? "Rina Kusuma",
     nim: options.nim ?? "20260001",
@@ -57,32 +57,32 @@ async function seedPending(
 
 describe("admin extras", () => {
   it("menghitung statistik antrean dan ruang", async () => {
-    const room = await seedRoom(db.pool, { policy: "perlu_persetujuan" });
+    const room = await seedRoom(db.store, { policy: "perlu_persetujuan" });
     await seedPending(room, wita("2026-10-26T09:00:00"), wita("2026-10-26T10:00:00"));
 
-    const stats = await getStats(db.pool);
+    const stats = await getStats(db.store);
 
     expect(stats.pending).toBe(1);
     expect(stats.totalRooms).toBe(1);
   });
 
   it("mencari pengajuan berdasarkan nama/NIM dan tanggal", async () => {
-    const room = await seedRoom(db.pool, { policy: "perlu_persetujuan" });
+    const room = await seedRoom(db.store, { policy: "perlu_persetujuan" });
     await seedPending(room, wita("2026-10-26T09:00:00"), wita("2026-10-26T10:00:00"), {
       nama: "Rina Kusuma",
       nim: "20260001",
     });
 
-    const byName = await listReservations(db.pool, "menunggu", {
+    const byName = await listReservations(db.store, "menunggu", {
       query: "Rina",
     });
-    const byNim = await listReservations(db.pool, "menunggu", {
+    const byNim = await listReservations(db.store, "menunggu", {
       query: "20260001",
     });
-    const byDate = await listReservations(db.pool, "menunggu", {
+    const byDate = await listReservations(db.store, "menunggu", {
       date: "2026-10-26",
     });
-    const empty = await listReservations(db.pool, "menunggu", {
+    const empty = await listReservations(db.store, "menunggu", {
       query: "Tidak Ada",
     });
 
@@ -93,16 +93,16 @@ describe("admin extras", () => {
   });
 
   it("membatalkan reservasi disetujui dan mencatat alasan", async () => {
-    const room = await seedRoom(db.pool, { policy: "perlu_persetujuan" });
+    const room = await seedRoom(db.store, { policy: "perlu_persetujuan" });
     const id = await seedPending(
       room,
       wita("2026-10-26T09:00:00"),
       wita("2026-10-26T10:00:00"),
     );
-    await approveReservation(db.pool, id);
+    await approveReservation(db.store, id);
 
     const cancelled = await cancelReservation(
-      db.pool,
+      db.store,
       id,
       "Kebutuhan akademik mendadak.",
     );
@@ -110,25 +110,25 @@ describe("admin extras", () => {
     expect(cancelled.status).toBe("dibatalkan");
     expect(cancelled.reason).toBe("Kebutuhan akademik mendadak.");
 
-    const list = await listReservations(db.pool, "dibatalkan");
+    const list = await listReservations(db.store, "dibatalkan");
     expect(list).toHaveLength(1);
   });
 
   it("membuat blokir dan membatalkan reservasi yang beririsan", async () => {
-    const room = await seedRoom(db.pool, { policy: "perlu_persetujuan" });
+    const room = await seedRoom(db.store, { policy: "perlu_persetujuan" });
     const first = await seedPending(
       room,
       wita("2099-10-26T09:00:00"),
       wita("2099-10-26T10:00:00"),
     );
-    await approveReservation(db.pool, first);
+    await approveReservation(db.store, first);
     const second = await seedPending(
       room,
       wita("2099-10-26T10:00:00"),
       wita("2099-10-26T11:00:00"),
     );
 
-    const result = await createBlock(db.pool, {
+    const result = await createBlock(db.store, {
       roomId: room,
       start: wita("2099-10-26T08:30:00"),
       end: wita("2099-10-26T11:30:00"),
@@ -137,14 +137,14 @@ describe("admin extras", () => {
 
     expect(result.cancelled).toBe(2);
 
-    const cancelled = await listReservations(db.pool, "dibatalkan");
+    const cancelled = await listReservations(db.store, "dibatalkan");
     expect(cancelled).toHaveLength(2);
 
-    const blocks = await listBlocks(db.pool);
+    const blocks = await listBlocks(db.store);
     expect(blocks).toHaveLength(1);
     expect(blocks[0]?.reason).toBe("Perawatan ruang.");
 
-    const events = await listEvents(db.pool);
+    const events = await listEvents(db.store);
     expect(
       events.some(
         (event) =>
@@ -155,8 +155,8 @@ describe("admin extras", () => {
   });
 
   it("menolak blokir yang beririsan dengan blokir lain", async () => {
-    const room = await seedRoom(db.pool);
-    await createBlock(db.pool, {
+    const room = await seedRoom(db.store);
+    await createBlock(db.store, {
       roomId: room,
       start: wita("2026-10-26T08:00:00"),
       end: wita("2026-10-26T10:00:00"),
@@ -164,7 +164,7 @@ describe("admin extras", () => {
     });
 
     await expect(
-      createBlock(db.pool, {
+      createBlock(db.store, {
         roomId: room,
         start: wita("2026-10-26T09:00:00"),
         end: wita("2026-10-26T11:00:00"),
@@ -174,15 +174,15 @@ describe("admin extras", () => {
   });
 
   it("menampilkan daftar ruang dan audit", async () => {
-    const room = await seedRoom(db.pool, {
+    const room = await seedRoom(db.store, {
       code: "A.1.2",
       name: "A.1.2 (LECT 1A)",
       policy: "perlu_persetujuan",
     });
     await seedPending(room, wita("2026-10-26T09:00:00"), wita("2026-10-26T10:00:00"));
 
-    const rooms = await listAdminRooms(db.pool);
-    const events = await listEvents(db.pool);
+    const rooms = await listAdminRooms(db.store);
+    const events = await listEvents(db.store);
 
     expect(rooms[0]).toMatchObject({ code: "A.1.2", name: "A.1.2 (LECT 1A)" });
     expect(events[0]?.to).toBe("menunggu");
@@ -193,7 +193,7 @@ describe("admin extras HTTP", () => {
   const headers = { "x-admin-code": config.adminCode };
 
   it("melayani statistik, ruang, blokir, dan audit", async () => {
-    const room = await seedRoom(db.pool, { policy: "perlu_persetujuan" });
+    const room = await seedRoom(db.store, { policy: "perlu_persetujuan" });
     await seedPending(room, wita("2099-10-26T09:00:00"), wita("2099-10-26T10:00:00"));
 
     const stats = await app.inject({
@@ -244,7 +244,7 @@ describe("admin extras HTTP", () => {
   });
 
   it("membatalkan reservasi lewat HTTP", async () => {
-    const room = await seedRoom(db.pool, { policy: "perlu_persetujuan" });
+    const room = await seedRoom(db.store, { policy: "perlu_persetujuan" });
     const id = await seedPending(
       room,
       wita("2026-10-26T09:00:00"),

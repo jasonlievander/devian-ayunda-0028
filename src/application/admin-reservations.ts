@@ -1,5 +1,15 @@
-import pg from "pg";
 import { DomainError, validationError } from "../domain/errors";
+import { witaDateKey } from "../domain/time";
+import {
+  nextId,
+  overlaps,
+  ACTIVE_STATUSES,
+  type MemoryStore,
+  type ReservationEventRecord,
+  type ReservationRecord,
+  type RoomBlockRecord,
+  type StoreState,
+} from "../infrastructure/memory-store";
 
 export type AdminStatus = "menunggu" | "disetujui" | "ditolak";
 export type AdminFilterStatus = AdminStatus | "semua" | "dibatalkan";
@@ -70,22 +80,6 @@ export interface CreateBlockInput {
   reason: string;
 }
 
-interface AdminRow {
-  id: string;
-  business_id: string;
-  room_name: string;
-  room_code: string;
-  pemohon_nama: string;
-  nim: string | null;
-  mulai: Date;
-  selesai: Date;
-  keperluan: string;
-  peserta: number;
-  status: string;
-  created_at: Date;
-  alasan: string | null;
-}
-
 const ALLOWED_STATUSES: AdminFilterStatus[] = [
   "menunggu",
   "disetujui",
@@ -94,47 +88,54 @@ const ALLOWED_STATUSES: AdminFilterStatus[] = [
   "semua",
 ];
 
-const SELECT_ADMIN = `
-  SELECT r.id, r.business_id, r.mulai, r.selesai, r.keperluan, r.peserta,
-         r.status, r.created_at, u.nama AS pemohon_nama, u.nim,
-         rm.nama AS room_name, rm.kode AS room_code, ev.alasan
-  FROM reservations r
-  JOIN users u ON u.id = r.user_id
-  JOIN rooms rm ON rm.id = r.room_id
-  LEFT JOIN LATERAL (
-    SELECT e.alasan
-    FROM reservation_events e
-    WHERE e.reservation_id = r.id AND e.alasan IS NOT NULL
-    ORDER BY e.waktu DESC, e.id DESC
-    LIMIT 1
-  ) ev ON true
-`;
+function latestReason(
+  state: StoreState,
+  reservationId: number,
+): string | null {
+  const events = state.events
+    .filter(
+      (event) =>
+        event.reservationId === reservationId && event.reason !== null,
+    )
+    .sort((a, b) => {
+      const diff = new Date(b.waktu).getTime() - new Date(a.waktu).getTime();
+      return diff !== 0 ? diff : b.id - a.id;
+    });
+  return events[0]?.reason ?? null;
+}
 
-function mapRow(row: AdminRow): AdminReservation {
+function mapReservation(
+  state: StoreState,
+  reservation: ReservationRecord,
+): AdminReservation {
+  const user = state.users.find(
+    (candidate) => candidate.id === reservation.userId,
+  );
+  const room = state.rooms.find(
+    (candidate) => candidate.id === reservation.roomId,
+  );
+
   return {
-    id: BigInt(row.id),
-    businessId: row.business_id,
-    roomName: row.room_name,
-    roomCode: row.room_code,
-    pemohonNama: row.pemohon_nama,
-    nim: row.nim,
-    start: new Date(row.mulai),
-    end: new Date(row.selesai),
-    purpose: row.keperluan,
-    participants: row.peserta,
-    status: row.status,
-    createdAt: new Date(row.created_at),
-    reason: row.alasan,
+    id: BigInt(reservation.id),
+    businessId: reservation.businessId,
+    roomName: room?.nama ?? "",
+    roomCode: room?.kode ?? "",
+    pemohonNama: user?.nama ?? "",
+    nim: user?.nim ?? null,
+    start: new Date(reservation.start),
+    end: new Date(reservation.end),
+    purpose: reservation.purpose,
+    participants: reservation.participants,
+    status: reservation.status,
+    createdAt: new Date(reservation.createdAt),
+    reason: latestReason(state, reservation.id),
   };
 }
 
 function validateReason(reason: string): string {
   const value = reason.trim();
   if (value.length < 3 || value.length > 500) {
-    throw validationError(
-      "Alasan wajib diisi (3–500 karakter)",
-      "reason",
-    );
+    throw validationError("Alasan wajib diisi (3–500 karakter)", "reason");
   }
   return value;
 }
@@ -153,17 +154,41 @@ function parseInstant(value: string, field: string): Date {
   return date;
 }
 
-function isExclusionViolation(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code: string }).code === "23P01"
+function findReservation(
+  state: StoreState,
+  id: bigint | number | string,
+): ReservationRecord {
+  const reservation = state.reservations.find(
+    (candidate) => candidate.id === Number(id),
   );
+  if (reservation === undefined) {
+    throw new DomainError("NOT_FOUND", "Pengajuan tidak ditemukan", 404);
+  }
+  return reservation;
+}
+
+function recordEvent(
+  state: StoreState,
+  reservationId: number,
+  from: ReservationRecord["status"],
+  to: ReservationRecord["status"],
+  reason: string | null,
+  actorId: number | null = null,
+  waktu = new Date().toISOString(),
+): void {
+  state.events.push({
+    id: nextId(state, "events"),
+    reservationId,
+    from,
+    to,
+    actorId,
+    reason,
+    waktu,
+  });
 }
 
 export async function listReservations(
-  pool: pg.Pool,
+  store: MemoryStore,
   status: AdminFilterStatus,
   filters: AdminReservationFilters = {},
 ): Promise<AdminReservation[]> {
@@ -171,78 +196,57 @@ export async function listReservations(
     throw validationError("Status pengajuan tidak valid", "status");
   }
 
-  const conditions: string[] = [];
-  const params: unknown[] = [];
+  return store.read((state) => {
+    const query = filters.query?.trim().toLowerCase();
+    const date = filters.date?.trim();
 
-  if (status !== "semua") {
-    params.push(status);
-    conditions.push(`r.status = $${params.length}::reservation_status`);
-  }
-
-  if (filters.query !== undefined && filters.query.trim() !== "") {
-    params.push(`%${filters.query.trim()}%`);
-    const index = params.length;
-    conditions.push(
-      `(u.nama ILIKE $${index} OR u.nim ILIKE $${index} OR r.business_id ILIKE $${index} OR rm.nama ILIKE $${index})`,
-    );
-  }
-
-  if (filters.date !== undefined && filters.date.trim() !== "") {
-    params.push(filters.date.trim());
-    const index = params.length;
-    conditions.push(
-      `(r.mulai AT TIME ZONE 'Asia/Makassar')::date = $${index}::date`,
-    );
-  }
-
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-
-  const result = await pool.query<AdminRow>(
-    `${SELECT_ADMIN}
-     ${where}
-     ORDER BY r.created_at ASC, r.id ASC
-     LIMIT 100`,
-    params,
-  );
-
-  return result.rows.map(mapRow);
-}
-
-async function findById(
-  client: pg.PoolClient,
-  id: string,
-): Promise<AdminRow | undefined> {
-  const result = await client.query<AdminRow>(
-    `${SELECT_ADMIN} WHERE r.id = $1`,
-    [id],
-  );
-  return result.rows[0];
+    return state.reservations
+      .filter((reservation) => {
+        if (status !== "semua" && reservation.status !== status) {
+          return false;
+        }
+        if (date !== undefined && date !== "") {
+          if (witaDateKey(new Date(reservation.start)) !== date) {
+            return false;
+          }
+        }
+        if (query !== undefined && query !== "") {
+          const user = state.users.find(
+            (candidate) => candidate.id === reservation.userId,
+          );
+          const room = state.rooms.find(
+            (candidate) => candidate.id === reservation.roomId,
+          );
+          const haystack = [
+            user?.nama ?? "",
+            user?.nim ?? "",
+            reservation.businessId,
+            room?.nama ?? "",
+          ]
+            .join(" ")
+            .toLowerCase();
+          if (!haystack.includes(query)) {
+            return false;
+          }
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const diff =
+          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+        return diff !== 0 ? diff : a.id - b.id;
+      })
+      .slice(0, 100)
+      .map((reservation) => mapReservation(state, reservation));
+  });
 }
 
 export async function approveReservation(
-  pool: pg.Pool,
+  store: MemoryStore,
   id: bigint | number | string,
 ): Promise<AdminReservation> {
-  const client = await pool.connect();
-
-  try {
-    await client.query("BEGIN");
-
-    const current = await client.query<{
-      id: string;
-      room_id: string;
-      status: string;
-      mulai: Date;
-      selesai: Date;
-    }>(
-      `SELECT id, room_id, status, mulai, selesai
-       FROM reservations WHERE id = $1 FOR UPDATE`,
-      [String(id)],
-    );
-    const reservation = current.rows[0];
-    if (reservation === undefined) {
-      throw new DomainError("NOT_FOUND", "Pengajuan tidak ditemukan", 404);
-    }
+  return store.transact((state) => {
+    const reservation = findReservation(state, id);
     if (reservation.status !== "menunggu") {
       throw new DomainError(
         "INVALID_STATE",
@@ -251,18 +255,12 @@ export async function approveReservation(
       );
     }
 
-    const blocks = await client.query(
-      `SELECT 1 FROM room_blocks
-       WHERE room_id = $1
-         AND tstzrange(mulai, selesai, '[)') && tstzrange($2, $3, '[)')
-       LIMIT 1`,
-      [
-        reservation.room_id,
-        new Date(reservation.mulai).toISOString(),
-        new Date(reservation.selesai).toISOString(),
-      ],
+    const blocked = state.blocks.some(
+      (block) =>
+        block.roomId === reservation.roomId &&
+        overlaps(block.start, block.end, reservation.start, reservation.end),
     );
-    if (blocks.rowCount !== 0) {
+    if (blocked) {
       throw new DomainError(
         "SLOT_CONFLICT",
         "Ruang diblokir pada waktu tersebut; pengajuan tidak dapat disetujui",
@@ -270,56 +268,46 @@ export async function approveReservation(
       );
     }
 
-    await client.query(
-      "UPDATE reservations SET status = 'disetujui', updated_at = now() WHERE id = $1",
-      [String(id)],
+    const conflict = state.reservations.some(
+      (other) =>
+        other.id !== reservation.id &&
+        other.roomId === reservation.roomId &&
+        ACTIVE_STATUSES.includes(other.status) &&
+        overlaps(other.start, other.end, reservation.start, reservation.end),
     );
-    await client.query(
-      `INSERT INTO reservation_events (reservation_id, dari, ke, pelaku, alasan)
-       VALUES ($1, 'menunggu', 'disetujui', NULL, $2)`,
-      [String(id), "Disetujui melalui panel petugas"],
-    );
-
-    const row = await findById(client, String(id));
-    await client.query("COMMIT");
-    return mapRow(row!);
-  } catch (error) {
-    await rollback(client);
-    if (error instanceof DomainError) {
-      throw error;
-    }
-    if (isExclusionViolation(error)) {
+    if (conflict) {
       throw new DomainError(
         "SLOT_CONFLICT",
         "Slot sudah dipakai; pengajuan tidak dapat disetujui",
         409,
       );
     }
-    throw error;
-  } finally {
-    client.release();
-  }
+
+    reservation.status = "disetujui";
+    reservation.updatedAt = new Date().toISOString();
+    recordEvent(
+      state,
+      reservation.id,
+      "menunggu",
+      "disetujui",
+      "Disetujui melalui panel petugas",
+      null,
+      reservation.updatedAt,
+    );
+
+    return mapReservation(state, reservation);
+  });
 }
 
 export async function rejectReservation(
-  pool: pg.Pool,
+  store: MemoryStore,
   id: bigint | number | string,
   reason: string,
 ): Promise<AdminReservation> {
   const alasan = validateReason(reason);
-  const client = await pool.connect();
 
-  try {
-    await client.query("BEGIN");
-
-    const current = await client.query<{ status: string }>(
-      "SELECT status FROM reservations WHERE id = $1 FOR UPDATE",
-      [String(id)],
-    );
-    const reservation = current.rows[0];
-    if (reservation === undefined) {
-      throw new DomainError("NOT_FOUND", "Pengajuan tidak ditemukan", 404);
-    }
+  return store.transact((state) => {
+    const reservation = findReservation(state, id);
     if (reservation.status !== "menunggu") {
       throw new DomainError(
         "INVALID_STATE",
@@ -328,46 +316,31 @@ export async function rejectReservation(
       );
     }
 
-    await client.query(
-      "UPDATE reservations SET status = 'ditolak', updated_at = now() WHERE id = $1",
-      [String(id)],
-    );
-    await client.query(
-      `INSERT INTO reservation_events (reservation_id, dari, ke, pelaku, alasan)
-       VALUES ($1, 'menunggu', 'ditolak', NULL, $2)`,
-      [String(id), alasan],
+    reservation.status = "ditolak";
+    reservation.updatedAt = new Date().toISOString();
+    recordEvent(
+      state,
+      reservation.id,
+      "menunggu",
+      "ditolak",
+      alasan,
+      null,
+      reservation.updatedAt,
     );
 
-    const row = await findById(client, String(id));
-    await client.query("COMMIT");
-    return mapRow(row!);
-  } catch (error) {
-    await rollback(client);
-    throw error;
-  } finally {
-    client.release();
-  }
+    return mapReservation(state, reservation);
+  });
 }
 
 export async function cancelReservation(
-  pool: pg.Pool,
+  store: MemoryStore,
   id: bigint | number | string,
   reason: string,
 ): Promise<AdminReservation> {
   const alasan = validateReason(reason);
-  const client = await pool.connect();
 
-  try {
-    await client.query("BEGIN");
-
-    const current = await client.query<{ status: string }>(
-      "SELECT status FROM reservations WHERE id = $1 FOR UPDATE",
-      [String(id)],
-    );
-    const reservation = current.rows[0];
-    if (reservation === undefined) {
-      throw new DomainError("NOT_FOUND", "Pengajuan tidak ditemukan", 404);
-    }
+  return store.transact((state) => {
+    const reservation = findReservation(state, id);
     if (!["menunggu", "disetujui"].includes(reservation.status)) {
       throw new DomainError(
         "INVALID_STATE",
@@ -376,121 +349,92 @@ export async function cancelReservation(
       );
     }
 
-    await client.query(
-      "UPDATE reservations SET status = 'dibatalkan', updated_at = now() WHERE id = $1",
-      [String(id)],
-    );
-    await client.query(
-      `INSERT INTO reservation_events (reservation_id, dari, ke, pelaku, alasan)
-       VALUES ($1, $2::reservation_status, 'dibatalkan', NULL, $3)`,
-      [String(id), reservation.status, alasan],
+    const from = reservation.status;
+    reservation.status = "dibatalkan";
+    reservation.updatedAt = new Date().toISOString();
+    recordEvent(
+      state,
+      reservation.id,
+      from,
+      "dibatalkan",
+      alasan,
+      null,
+      reservation.updatedAt,
     );
 
-    const row = await findById(client, String(id));
-    await client.query("COMMIT");
-    return mapRow(row!);
-  } catch (error) {
-    await rollback(client);
-    throw error;
-  } finally {
-    client.release();
-  }
+    return mapReservation(state, reservation);
+  });
 }
 
-async function rollback(client: pg.PoolClient): Promise<void> {
-  try {
-    await client.query("ROLLBACK");
-  } catch {
-    // transaksi mungkin sudah selesai
-  }
+export async function getStats(store: MemoryStore): Promise<AdminStats> {
+  const now = new Date();
+  const today = witaDateKey(now);
+
+  return store.read((state) => {
+    const activeToday = state.reservations.filter(
+      (reservation) =>
+        ["disetujui", "berlangsung"].includes(reservation.status) &&
+        witaDateKey(new Date(reservation.start)) === today,
+    );
+
+    return {
+      pending: state.reservations.filter(
+        (reservation) => reservation.status === "menunggu",
+      ).length,
+      approvedToday: activeToday.length,
+      roomsInUseToday: new Set(
+        activeToday.map((reservation) => reservation.roomId),
+      ).size,
+      totalRooms: state.rooms.filter((room) => room.aktif).length,
+    };
+  });
 }
 
-export async function getStats(pool: pg.Pool): Promise<AdminStats> {
-  const result = await pool.query<{
-    pending: number;
-    approved_today: number;
-    rooms_in_use_today: number;
-    total_rooms: number;
-  }>(`
-    SELECT
-      (SELECT count(*) FROM reservations WHERE status = 'menunggu')::int AS pending,
-      (SELECT count(*) FROM reservations
-        WHERE status IN ('disetujui', 'berlangsung')
-          AND (mulai AT TIME ZONE 'Asia/Makassar')::date
-              = (now() AT TIME ZONE 'Asia/Makassar')::date)::int AS approved_today,
-      (SELECT count(DISTINCT room_id) FROM reservations
-        WHERE status IN ('disetujui', 'berlangsung')
-          AND (mulai AT TIME ZONE 'Asia/Makassar')::date
-              = (now() AT TIME ZONE 'Asia/Makassar')::date)::int AS rooms_in_use_today,
-      (SELECT count(*) FROM rooms WHERE aktif)::int AS total_rooms
-  `);
+export async function listAdminRooms(store: MemoryStore): Promise<AdminRoom[]> {
+  return store.read((state) =>
+    state.rooms
+      .filter((room) => room.aktif)
+      .sort((a, b) => a.kode.localeCompare(b.kode))
+      .map((room) => ({
+        id: BigInt(room.id),
+        code: room.kode,
+        name: room.nama,
+        capacity: room.kapasitas,
+        policy: room.kebijakan,
+      })),
+  );
+}
 
-  const row = result.rows[0]!;
+function mapBlock(state: StoreState, block: RoomBlockRecord): AdminBlock {
+  const room = state.rooms.find((candidate) => candidate.id === block.roomId);
   return {
-    pending: row.pending,
-    approvedToday: row.approved_today,
-    roomsInUseToday: row.rooms_in_use_today,
-    totalRooms: row.total_rooms,
+    id: BigInt(block.id),
+    roomId: BigInt(block.roomId),
+    roomName: room?.nama ?? "",
+    roomCode: room?.kode ?? "",
+    start: new Date(block.start),
+    end: new Date(block.end),
+    reason: block.reason,
+    source: block.source,
+    createdAt: new Date(block.createdAt),
   };
 }
 
-export async function listAdminRooms(pool: pg.Pool): Promise<AdminRoom[]> {
-  const result = await pool.query<{
-    id: string;
-    kode: string;
-    nama: string;
-    kapasitas: number | null;
-    kebijakan: string;
-  }>(
-    `SELECT id, kode, nama, kapasitas, kebijakan
-     FROM rooms WHERE aktif ORDER BY kode ASC`,
+export async function listBlocks(store: MemoryStore): Promise<AdminBlock[]> {
+  return store.read((state) =>
+    state.blocks
+      .filter((block) => new Date(block.end).getTime() >= Date.now())
+      .sort((a, b) => {
+        const diff = new Date(a.start).getTime() - new Date(b.start).getTime();
+        return diff !== 0 ? diff : a.id - b.id;
+      })
+      .slice(0, 100)
+      .map((block) => mapBlock(state, block)),
   );
-
-  return result.rows.map((row) => ({
-    id: BigInt(row.id),
-    code: row.kode,
-    name: row.nama,
-    capacity: row.kapasitas,
-    policy: row.kebijakan,
-  }));
-}
-
-export async function listBlocks(pool: pg.Pool): Promise<AdminBlock[]> {
-  const result = await pool.query<{
-    id: string;
-    room_id: string;
-    room_name: string;
-    room_code: string;
-    mulai: Date;
-    selesai: Date;
-    alasan: string;
-    sumber: string;
-    created_at: Date;
-  }>(
-    `SELECT b.id, b.room_id, rm.nama AS room_name, rm.kode AS room_code,
-            b.mulai, b.selesai, b.alasan, b.sumber, b.created_at
-     FROM room_blocks b
-     JOIN rooms rm ON rm.id = b.room_id
-     WHERE b.selesai >= now()
-     ORDER BY b.mulai ASC, b.id ASC
-     LIMIT 100`,
-  );
-
-  return result.rows.map((row) => ({
-    id: BigInt(row.id),
-    roomId: BigInt(row.room_id),
-    roomName: row.room_name,
-    roomCode: row.room_code,
-    start: new Date(row.mulai),
-    end: new Date(row.selesai),
-    reason: row.alasan,
-    source: row.sumber,
-    createdAt: new Date(row.created_at),
-  }));
 }
 
 export async function createBlock(
-  pool: pg.Pool,
+  store: MemoryStore,
   input: CreateBlockInput,
 ): Promise<{ block: AdminBlock; cancelled: number }> {
   const reason = validateReason(input.reason);
@@ -500,136 +444,105 @@ export async function createBlock(
     throw validationError("Waktu selesai harus setelah waktu mulai", "end");
   }
 
-  const client = await pool.connect();
-
-  try {
-    await client.query("BEGIN");
-
-    const room = await client.query<{ id: string; aktif: boolean }>(
-      "SELECT id, aktif FROM rooms WHERE id = $1 FOR UPDATE",
-      [String(input.roomId)],
+  return store.transact((state) => {
+    const room = state.rooms.find(
+      (candidate) => candidate.id === Number(input.roomId),
     );
-    if (room.rows[0] === undefined) {
+    if (room === undefined) {
       throw new DomainError("NOT_FOUND", "Ruang tidak ditemukan", 404);
     }
-    if (!room.rows[0].aktif) {
+    if (!room.aktif) {
       throw new DomainError("ROOM_UNAVAILABLE", "Ruang sedang tidak aktif", 409);
     }
 
-    const inserted = await client.query<{
-      id: string;
-      room_id: string;
-      mulai: Date;
-      selesai: Date;
-      alasan: string;
-      sumber: string;
-      created_at: Date;
-    }>(
-      `INSERT INTO room_blocks (room_id, mulai, selesai, alasan, sumber)
-       VALUES ($1, $2, $3, $4, 'petugas')
-       RETURNING id, room_id, mulai, selesai, alasan, sumber, created_at`,
-      [String(input.roomId), start.toISOString(), end.toISOString(), reason],
+    const overlappingBlock = state.blocks.some(
+      (block) =>
+        block.roomId === room.id && overlaps(block.start, block.end, start, end),
     );
-    const blockRow = inserted.rows[0]!;
-
-    const overlapping = await client.query<{ id: string; status: string }>(
-      `SELECT id, status FROM reservations
-       WHERE room_id = $1
-         AND status IN ('menunggu', 'disetujui')
-         AND tstzrange(mulai, selesai, '[)') && tstzrange($2, $3, '[)')
-       FOR UPDATE`,
-      [String(input.roomId), start.toISOString(), end.toISOString()],
-    );
-
-    for (const reservation of overlapping.rows) {
-      await client.query(
-        "UPDATE reservations SET status = 'dibatalkan', updated_at = now() WHERE id = $1",
-        [reservation.id],
-      );
-      await client.query(
-        `INSERT INTO reservation_events (reservation_id, dari, ke, pelaku, alasan)
-         VALUES ($1, $2::reservation_status, 'dibatalkan', NULL, $3)`,
-        [
-          reservation.id,
-          reservation.status,
-          `Ruang diblokir: ${reason}`,
-        ],
-      );
-    }
-
-    const roomInfo = await client.query<{ nama: string; kode: string }>(
-      "SELECT nama, kode FROM rooms WHERE id = $1",
-      [String(input.roomId)],
-    );
-
-    await client.query("COMMIT");
-
-    return {
-      block: {
-        id: BigInt(blockRow.id),
-        roomId: BigInt(blockRow.room_id),
-        roomName: roomInfo.rows[0]!.nama,
-        roomCode: roomInfo.rows[0]!.kode,
-        start: new Date(blockRow.mulai),
-        end: new Date(blockRow.selesai),
-        reason: blockRow.alasan,
-        source: blockRow.sumber,
-        createdAt: new Date(blockRow.created_at),
-      },
-      cancelled: overlapping.rowCount ?? 0,
-    };
-  } catch (error) {
-    await rollback(client);
-    if (error instanceof DomainError) {
-      throw error;
-    }
-    if (isExclusionViolation(error)) {
+    if (overlappingBlock) {
       throw new DomainError(
         "SLOT_CONFLICT",
         "Blokir beririsan dengan blok lain pada ruang tersebut",
         409,
       );
     }
-    throw error;
-  } finally {
-    client.release();
-  }
+
+    const timestamp = new Date().toISOString();
+    const block: RoomBlockRecord = {
+      id: nextId(state, "blocks"),
+      roomId: room.id,
+      start: start.toISOString(),
+      end: end.toISOString(),
+      reason,
+      source: "petugas",
+      createdAt: timestamp,
+    };
+    state.blocks.push(block);
+
+    const overlappingReservations = state.reservations.filter(
+      (reservation) =>
+        reservation.roomId === room.id &&
+        ["menunggu", "disetujui"].includes(reservation.status) &&
+        overlaps(reservation.start, reservation.end, start, end),
+    );
+
+    for (const reservation of overlappingReservations) {
+      const from = reservation.status;
+      reservation.status = "dibatalkan";
+      reservation.updatedAt = timestamp;
+      recordEvent(
+        state,
+        reservation.id,
+        from,
+        "dibatalkan",
+        `Ruang diblokir: ${reason}`,
+        null,
+        timestamp,
+      );
+    }
+
+    return {
+      block: mapBlock(state, block),
+      cancelled: overlappingReservations.length,
+    };
+  });
 }
 
 export async function listEvents(
-  pool: pg.Pool,
+  store: MemoryStore,
   limit = 50,
 ): Promise<AdminEvent[]> {
   const safeLimit = Math.min(Math.max(limit, 1), 200);
-  const result = await pool.query<{
-    id: string;
-    business_id: string;
-    room_name: string;
-    dari: string | null;
-    ke: string;
-    alasan: string | null;
-    pelaku: string | null;
-    waktu: Date;
-  }>(
-    `SELECT e.id, r.business_id, rm.nama AS room_name, e.dari, e.ke,
-            e.alasan, u.nama AS pelaku, e.waktu
-     FROM reservation_events e
-     JOIN reservations r ON r.id = e.reservation_id
-     JOIN rooms rm ON rm.id = r.room_id
-     LEFT JOIN users u ON u.id = e.pelaku
-     ORDER BY e.waktu DESC, e.id DESC
-     LIMIT $1`,
-    [safeLimit],
-  );
 
-  return result.rows.map((row) => ({
-    id: BigInt(row.id),
-    businessId: row.business_id,
-    roomName: row.room_name,
-    from: row.dari,
-    to: row.ke,
-    reason: row.alasan,
-    actor: row.pelaku ?? (row.ke === "menunggu" ? "Pemohon" : "Petugas"),
-    waktu: new Date(row.waktu),
-  }));
+  return store.read((state) => {
+    const sorted: ReservationEventRecord[] = [...state.events].sort((a, b) => {
+      const diff = new Date(b.waktu).getTime() - new Date(a.waktu).getTime();
+      return diff !== 0 ? diff : b.id - a.id;
+    });
+
+    return sorted.slice(0, safeLimit).map((event) => {
+      const reservation = state.reservations.find(
+        (candidate) => candidate.id === event.reservationId,
+      );
+      const room = state.rooms.find(
+        (candidate) => candidate.id === reservation?.roomId,
+      );
+      const actor = state.users.find(
+        (candidate) => candidate.id === event.actorId,
+      );
+
+      return {
+        id: BigInt(event.id),
+        businessId: reservation?.businessId ?? "",
+        roomName: room?.nama ?? "",
+        from: event.from,
+        to: event.to,
+        reason: event.reason,
+        actor:
+          actor?.nama ??
+          (event.to === "menunggu" ? "Pemohon" : "Petugas"),
+        waktu: new Date(event.waktu),
+      };
+    });
+  });
 }

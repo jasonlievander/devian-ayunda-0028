@@ -1,0 +1,20 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build",
+  "outputDirectory": "public",
+  "functions": {
+    "api/index.ts": {
+      "includeFiles": ["public/**"]
+    }
+  },
+  "rewrites": [
+    { "source": "/login", "destination": "/login.html" },
+    { "source": "/admin", "destination": "/index.html" },
+    { "source": "/auth/login", "destination": "/api/index" },
+    { "source": "/reservations", "destination": "/api/index" },
+    { "source": "/calendar", "destination": "/api/index" },
+    { "source": "/events", "destination": "/api/index" },
+    { "source": "/health", "destination": "/api/index" },
+    { "source": "/admin/:path*", "destination": "/api/index" }
+  ]
+}

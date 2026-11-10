@@ -1,11 +1,11 @@
-import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { MemoryStore } from "../../src/infrastructure/memory-store";
 import { createApp } from "../../src/http/app";
 
 let app: ReturnType<typeof createApp>;
 
 beforeAll(async () => {
-  app = createApp({ pool: {} as pg.Pool });
+  app = createApp({ store: await MemoryStore.open() });
   await app.ready();
 });
 

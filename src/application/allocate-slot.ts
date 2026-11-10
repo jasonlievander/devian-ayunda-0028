@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import pg from "pg";
 import { config } from "../config";
 import { DomainError, validationError } from "../domain/errors";
 import {
@@ -9,6 +8,14 @@ import {
   type RoomPolicy,
 } from "../domain/policy";
 import { parseTimeRange } from "../domain/time";
+import {
+  nextId,
+  overlaps,
+  ACTIVE_STATUSES,
+  type MemoryStore,
+  type ReservationRecord,
+  type StoreState,
+} from "../infrastructure/memory-store";
 
 export type ReservationStatus =
   | "menunggu"
@@ -55,45 +62,15 @@ export interface AllocationResult {
   replayed: boolean;
 }
 
-interface UserRow {
-  id: string;
-  nama: string;
-  peran: string;
-  status: string;
-  nim: string | null;
-}
-
-interface RoomRow {
-  id: string;
-  tipe: string;
-  kapasitas: number | null;
-  kebijakan: RoomPolicy;
-  aktif: boolean;
-  allowed_roles: string[];
-}
-
-interface ReservationRow {
-  id: string;
-  business_id: string;
-  room_id: string;
-  user_id: string;
-  org_id: string | null;
-  mulai: Date;
-  selesai: Date;
-  keperluan: string;
-  peserta: number;
-  status: ReservationStatus;
-  request_hash: string;
-}
-
-const ACTIVE_STATUSES = ["menunggu", "disetujui", "berlangsung"] as const;
-
 function requestHash(input: AllocateSlotInput): string {
   return createHash("sha256")
     .update(
       JSON.stringify({
         roomId: String(input.roomId),
-        orgId: input.orgId === undefined || input.orgId === null ? null : String(input.orgId),
+        orgId:
+          input.orgId === undefined || input.orgId === null
+            ? null
+            : String(input.orgId),
         start: input.start,
         end: input.end,
         purpose: input.purpose,
@@ -107,65 +84,33 @@ function requestHash(input: AllocateSlotInput): string {
 }
 
 function mapReservation(
-  row: ReservationRow,
-  identity: { pemohonNama: string | null; nim: string | null } = {
-    pemohonNama: null,
-    nim: null,
-  },
+  row: ReservationRecord,
+  identity: { pemohonNama: string | null; nim: string | null },
 ): AllocatedReservation {
   return {
     id: BigInt(row.id),
-    businessId: row.business_id,
-    roomId: BigInt(row.room_id),
-    userId: BigInt(row.user_id),
-    orgId: row.org_id === null ? null : BigInt(row.org_id),
-    start: new Date(row.mulai),
-    end: new Date(row.selesai),
-    purpose: row.keperluan,
-    participants: row.peserta,
+    businessId: row.businessId,
+    roomId: BigInt(row.roomId),
+    userId: BigInt(row.userId),
+    orgId: row.orgId === null ? null : BigInt(row.orgId),
+    start: new Date(row.start),
+    end: new Date(row.end),
+    purpose: row.purpose,
+    participants: row.participants,
     status: row.status,
     pemohonNama: identity.pemohonNama,
     nim: identity.nim,
   };
 }
 
-function isUniqueViolation(error: unknown): error is { code: string; constraint?: string } {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code: unknown }).code === "23505"
-  );
-}
-
-function isExclusionViolation(error: unknown): error is { code: string } {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code: unknown }).code === "23P01"
-  );
-}
-
-async function nextBusinessId(
-  client: pg.PoolClient,
-  dayKey: string,
-): Promise<string> {
-  const result = await client.query<{ last_value: number }>(
-    `INSERT INTO reservation_daily_seq (day, last_value)
-     VALUES ($1, 1)
-     ON CONFLICT (day)
-     DO UPDATE SET last_value = reservation_daily_seq.last_value + 1
-     RETURNING last_value`,
-    [dayKey],
-  );
-
-  const sequence = result.rows[0]!.last_value;
+function nextBusinessId(state: StoreState, dayKey: string): string {
+  const sequence = (state.dailySeq[dayKey] ?? 0) + 1;
+  state.dailySeq[dayKey] = sequence;
   return `RSV-${dayKey.replaceAll("-", "")}-${String(sequence).padStart(4, "0")}`;
 }
 
 export async function allocateSlot(
-  pool: pg.Pool,
+  store: MemoryStore,
   input: AllocateSlotInput,
 ): Promise<AllocationResult> {
   if (!input.idempotencyKey || input.idempotencyKey.trim() === "") {
@@ -193,41 +138,33 @@ export async function allocateSlot(
   const orgId =
     input.orgId === undefined || input.orgId === null
       ? null
-      : String(input.orgId);
+      : Number(input.orgId);
   const hash = requestHash(input);
 
-  const client = await pool.connect();
-  let resolvedUserId: string | null = null;
-  let identity: { pemohonNama: string | null; nim: string | null } = {
-    pemohonNama: null,
-    nim: null,
-  };
-
-  try {
-    await client.query("BEGIN");
+  return store.transact((state) => {
+    let resolvedUserId: number;
 
     if (nim !== undefined) {
-      await client.query(
-        "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
-        [nim],
-      );
-      const created = await client.query<{ id: string }>(
-        `INSERT INTO users (nama, email, peran, status, nim)
-         VALUES ($1, $2, 'mahasiswa', 'aktif', $3)
-         ON CONFLICT (nim) DO UPDATE SET nama = EXCLUDED.nama
-         RETURNING id`,
-        [pemohonNama, `${nim}@idbbali.ac.id`, nim],
-      );
-      resolvedUserId = created.rows[0]!.id;
+      const existingUser = state.users.find((user) => user.nim === nim);
+      if (existingUser !== undefined) {
+        existingUser.nama = pemohonNama!;
+        resolvedUserId = existingUser.id;
+      } else {
+        resolvedUserId = nextId(state, "users");
+        state.users.push({
+          id: resolvedUserId,
+          nama: pemohonNama!,
+          email: `${nim}@idbbali.ac.id`,
+          peran: "mahasiswa",
+          status: "aktif",
+          nim,
+        });
+      }
     } else {
-      resolvedUserId = String(input.userId);
+      resolvedUserId = Number(input.userId);
     }
 
-    const userResult = await client.query<UserRow>(
-      "SELECT id, nama, peran, status, nim FROM users WHERE id = $1 FOR UPDATE",
-      [resolvedUserId],
-    );
-    const user = userResult.rows[0];
+    const user = state.users.find((candidate) => candidate.id === resolvedUserId);
     if (user === undefined) {
       throw new DomainError("NOT_FOUND", "Pengguna tidak ditemukan", 404);
     }
@@ -235,28 +172,22 @@ export async function allocateSlot(
       throw new DomainError("FORBIDDEN", "Akun tidak aktif", 403);
     }
 
-    identity = { pemohonNama: user.nama, nim: user.nim };
+    const identity = { pemohonNama: user.nama, nim: user.nim };
 
-    const roomResult = await client.query<RoomRow>(
-      `SELECT id, tipe, kapasitas, kebijakan, aktif, allowed_roles
-       FROM rooms WHERE id = $1 FOR UPDATE`,
-      [String(input.roomId)],
+    const room = state.rooms.find(
+      (candidate) => candidate.id === Number(input.roomId),
     );
-    const room = roomResult.rows[0];
     if (room === undefined) {
       throw new DomainError("NOT_FOUND", "Ruang tidak ditemukan", 404);
     }
 
-    const existingResult = await client.query<ReservationRow>(
-      `SELECT id, business_id, room_id, user_id, org_id, mulai, selesai,
-              keperluan, peserta, status, request_hash
-       FROM reservations
-       WHERE user_id = $1 AND kunci_idempoten = $2`,
-      [resolvedUserId, input.idempotencyKey],
+    const existing = state.reservations.find(
+      (reservation) =>
+        reservation.userId === resolvedUserId &&
+        reservation.idempotencyKey === input.idempotencyKey,
     );
-    const existing = existingResult.rows[0];
     if (existing !== undefined) {
-      if (existing.request_hash !== hash) {
+      if (existing.requestHash !== hash) {
         throw new DomainError(
           "IDEMPOTENCY_MISMATCH",
           "Kunci idempoten sudah dipakai untuk pengajuan yang berbeda",
@@ -264,12 +195,13 @@ export async function allocateSlot(
           "idempotencyKey",
         );
       }
-
-      await client.query("COMMIT");
       return { reservation: mapReservation(existing, identity), replayed: true };
     }
 
-    if (input.specialApproval === true && !["petugas", "admin"].includes(user.peran)) {
+    if (
+      input.specialApproval === true &&
+      !["petugas", "admin"].includes(user.peran)
+    ) {
       throw new DomainError(
         "FORBIDDEN",
         "Persetujuan khusus hanya dapat diberikan petugas atau admin",
@@ -281,7 +213,10 @@ export async function allocateSlot(
       throw new DomainError("ROOM_UNAVAILABLE", "Ruang sedang tidak aktif", 409);
     }
 
-    if (room.kebijakan === "khusus" && !room.allowed_roles.includes(user.peran)) {
+    if (
+      room.kebijakan === "khusus" &&
+      !room.allowedRoles.includes(user.peran)
+    ) {
       throw new DomainError(
         "FORBIDDEN",
         "Peran Anda tidak diizinkan memakai ruang ini",
@@ -290,11 +225,10 @@ export async function allocateSlot(
     }
 
     if (orgId !== null) {
-      const membership = await client.query(
-        "SELECT 1 FROM org_members WHERE user_id = $1 AND org_id = $2 LIMIT 1",
-        [resolvedUserId, orgId],
+      const membership = state.orgMembers.some(
+        (member) => member.userId === resolvedUserId && member.orgId === orgId,
       );
-      if (membership.rowCount === 0) {
+      if (!membership) {
         throw new DomainError(
           "FORBIDDEN",
           "Anda bukan pengurus organisasi tersebut",
@@ -311,22 +245,35 @@ export async function allocateSlot(
     });
     assertLeadTime(range, {
       now,
-      policy: room.kebijakan,
+      policy: room.kebijakan as RoomPolicy,
       roomType: room.tipe,
       purpose: input.purpose,
     });
 
-    const blockConflict = await client.query(
-      `SELECT 1 FROM room_blocks
-       WHERE room_id = $1
-         AND tstzrange(mulai, selesai, '[)') && tstzrange($2, $3, '[)')
-       LIMIT 1`,
-      [String(input.roomId), range.start.toISOString(), range.end.toISOString()],
+    const blockConflict = state.blocks.some(
+      (block) =>
+        block.roomId === room.id &&
+        overlaps(block.start, block.end, range.start, range.end),
     );
-    if (blockConflict.rowCount !== 0) {
+    if (blockConflict) {
       throw new DomainError(
         "SLOT_CONFLICT",
         "Slot ini beririsan dengan jadwal kuliah atau blokir petugas",
+        409,
+        "mulai",
+      );
+    }
+
+    const conflicting = state.reservations.some(
+      (reservation) =>
+        reservation.roomId === room.id &&
+        ACTIVE_STATUSES.includes(reservation.status) &&
+        overlaps(reservation.start, reservation.end, range.start, range.end),
+    );
+    if (conflicting) {
+      throw new DomainError(
+        "SLOT_CONFLICT",
+        "Slot ini baru saja dipesan. Pilih jam lain atau ruang lain.",
         409,
         "mulai",
       );
@@ -346,13 +293,13 @@ export async function allocateSlot(
         );
       }
 
-      const activeCount = await client.query<{ total: number }>(
-        `SELECT count(*)::int AS total FROM reservations
-         WHERE user_id = $1 AND status = ANY($2::reservation_status[])`,
-        [resolvedUserId, ACTIVE_STATUSES],
-      );
+      const activeCount = state.reservations.filter(
+        (reservation) =>
+          reservation.userId === resolvedUserId &&
+          ACTIVE_STATUSES.includes(reservation.status),
+      ).length;
 
-      if (activeCount.rows[0]!.total >= config.quota.maxActivePersonal) {
+      if (activeCount >= config.quota.maxActivePersonal) {
         throw new DomainError(
           "QUOTA_EXCEEDED",
           `Maksimal ${config.quota.maxActivePersonal} reservasi aktif pribadi. Selesaikan atau batalkan salah satu sebelum mengajukan lagi.`,
@@ -363,88 +310,40 @@ export async function allocateSlot(
 
     const status: ReservationStatus =
       room.kebijakan === "terbuka" ? "disetujui" : "menunggu";
-    const businessId = await nextBusinessId(client, range.startWita.dateKey);
+    const businessId = nextBusinessId(state, range.startWita.dateKey);
+    const timestamp = now.toISOString();
 
-    const inserted = await client.query<ReservationRow>(
-      `INSERT INTO reservations
-        (business_id, room_id, user_id, org_id, mulai, selesai, keperluan,
-         peserta, status, kunci_idempoten, request_hash)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-       RETURNING id, business_id, room_id, user_id, org_id, mulai, selesai,
-                 keperluan, peserta, status, request_hash`,
-      [
-        businessId,
-        String(input.roomId),
-        resolvedUserId,
-        orgId,
-        range.start.toISOString(),
-        range.end.toISOString(),
-        input.purpose,
-        input.participants,
-        status,
-        input.idempotencyKey,
-        hash,
-      ],
-    );
+    const reservation: ReservationRecord = {
+      id: nextId(state, "reservations"),
+      businessId,
+      roomId: room.id,
+      userId: resolvedUserId,
+      orgId,
+      start: range.start.toISOString(),
+      end: range.end.toISOString(),
+      purpose: input.purpose,
+      participants: input.participants,
+      status,
+      idempotencyKey: input.idempotencyKey,
+      requestHash: hash,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    state.reservations.push(reservation);
 
-    const reservation = inserted.rows[0]!;
+    state.events.push({
+      id: nextId(state, "events"),
+      reservationId: reservation.id,
+      from: null,
+      to: status,
+      actorId: resolvedUserId,
+      reason: null,
+      waktu: timestamp,
+    });
 
-    await client.query(
-      `INSERT INTO reservation_events (reservation_id, dari, ke, pelaku)
-       VALUES ($1, NULL, $2, $3)`,
-      [reservation.id, status, resolvedUserId],
-    );
-
-    await client.query("COMMIT");
-    return { reservation: mapReservation(reservation, identity), replayed: false };
-  } catch (error) {
-    try {
-      await client.query("ROLLBACK");
-    } catch {
-      // transaksi mungkin sudah selesai
-    }
-
-    if (error instanceof DomainError) {
-      throw error;
-    }
-
-    if (isExclusionViolation(error)) {
-      throw new DomainError(
-        "SLOT_CONFLICT",
-        "Slot ini baru saja dipesan. Pilih jam lain atau ruang lain.",
-        409,
-        "mulai",
-      );
-    }
-
-    if (
-      isUniqueViolation(error) &&
-      error.constraint?.includes("reservations_idempotency")
-    ) {
-      if (resolvedUserId === null) {
-        throw error;
-      }
-      const existing = await client.query<ReservationRow>(
-        `SELECT id, business_id, room_id, user_id, org_id, mulai, selesai,
-                keperluan, peserta, status, request_hash
-         FROM reservations
-         WHERE user_id = $1 AND kunci_idempoten = $2`,
-        [resolvedUserId, input.idempotencyKey],
-      );
-      const row = existing.rows[0];
-      if (row !== undefined && row.request_hash === hash) {
-        return { reservation: mapReservation(row, identity), replayed: true };
-      }
-      throw new DomainError(
-        "IDEMPOTENCY_MISMATCH",
-        "Kunci idempoten sudah dipakai untuk pengajuan yang berbeda",
-        409,
-        "idempotencyKey",
-      );
-    }
-
-    throw error;
-  } finally {
-    client.release();
-  }
+    return {
+      reservation: mapReservation(reservation, identity),
+      replayed: false,
+    };
+  });
 }

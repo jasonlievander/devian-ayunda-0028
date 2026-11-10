@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/http/app";
 import {
+  findUserByNim,
   resetDb,
   seedRoom,
   seedUser,
@@ -16,7 +17,7 @@ let app: ReturnType<typeof createApp>;
 beforeAll(async () => {
   db = await startTestDb();
   app = createApp({
-    pool: db.pool,
+    store: db.store,
     now: () => new Date("2026-10-19T01:00:00Z"),
   });
   await app.ready();
@@ -28,7 +29,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await resetDb(db.pool);
+  await resetDb(db.store);
 });
 
 function payload(roomId: bigint, overrides: Record<string, unknown> = {}) {
@@ -44,8 +45,8 @@ function payload(roomId: bigint, overrides: Record<string, unknown> = {}) {
 
 describe("POST /reservations", () => {
   it("mengembalikan 201 untuk pengajuan yang berhasil", async () => {
-    const user = await seedUser(db.pool);
-    const room = await seedRoom(db.pool);
+    const user = await seedUser(db.store);
+    const room = await seedRoom(db.store);
 
     const response = await app.inject({
       method: "POST",
@@ -65,8 +66,8 @@ describe("POST /reservations", () => {
   });
 
   it("mengembalikan 200 replay untuk kunci idempoten yang sama", async () => {
-    const user = await seedUser(db.pool);
-    const room = await seedRoom(db.pool);
+    const user = await seedUser(db.store);
+    const room = await seedRoom(db.store);
     const headers = {
       "x-user-id": user.toString(),
       "idempotency-key": "http-replay",
@@ -92,7 +93,7 @@ describe("POST /reservations", () => {
   });
 
   it("menerima nama dan NIM yang diketik pengguna", async () => {
-    const room = await seedRoom(db.pool);
+    const room = await seedRoom(db.store);
 
     const response = await app.inject({
       method: "POST",
@@ -109,15 +110,12 @@ describe("POST /reservations", () => {
     expect(body.data.pemohonNama).toBe("Rina Kusuma");
     expect(body.data.nim).toBe("20260001");
 
-    const user = await db.pool.query(
-      "SELECT nama, nim FROM users WHERE nim = $1",
-      ["20260001"],
-    );
-    expect(user.rows[0]).toMatchObject({ nama: "Rina Kusuma", nim: "20260001" });
+    const user = await findUserByNim(db.store, "20260001");
+    expect(user).toMatchObject({ nama: "Rina Kusuma", nim: "20260001" });
   });
 
   it("menolak NIM yang bukan angka", async () => {
-    const room = await seedRoom(db.pool);
+    const room = await seedRoom(db.store);
 
     const response = await app.inject({
       method: "POST",
@@ -135,9 +133,9 @@ describe("POST /reservations", () => {
   });
 
   it("mengembalikan 409 saat slot sudah dipakai", async () => {
-    const userA = await seedUser(db.pool);
-    const userB = await seedUser(db.pool);
-    const room = await seedRoom(db.pool);
+    const userA = await seedUser(db.store);
+    const userB = await seedUser(db.store);
+    const room = await seedRoom(db.store);
 
     const first = await app.inject({
       method: "POST",
@@ -160,8 +158,8 @@ describe("POST /reservations", () => {
   });
 
   it("mengembalikan 422 untuk peserta melebihi kapasitas", async () => {
-    const user = await seedUser(db.pool);
-    const room = await seedRoom(db.pool, { capacity: 4 });
+    const user = await seedUser(db.store);
+    const room = await seedRoom(db.store, { capacity: 4 });
 
     const response = await app.inject({
       method: "POST",
@@ -176,8 +174,8 @@ describe("POST /reservations", () => {
   });
 
   it("mengembalikan 422 bila header idempotency-key tidak ada", async () => {
-    const user = await seedUser(db.pool);
-    const room = await seedRoom(db.pool);
+    const user = await seedUser(db.store);
+    const room = await seedRoom(db.store);
 
     const response = await app.inject({
       method: "POST",
@@ -191,7 +189,7 @@ describe("POST /reservations", () => {
   });
 
   it("mengembalikan 422 bila body tidak lengkap", async () => {
-    const user = await seedUser(db.pool);
+    const user = await seedUser(db.store);
 
     const response = await app.inject({
       method: "POST",

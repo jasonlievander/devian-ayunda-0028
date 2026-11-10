@@ -17,7 +17,7 @@ let app: ReturnType<typeof createApp>;
 
 beforeAll(async () => {
   db = await startTestDb();
-  app = createApp({ pool: db.pool, now: () => NOW });
+  app = createApp({ store: db.store, now: () => NOW });
   await app.ready();
 });
 
@@ -27,7 +27,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await resetDb(db.pool);
+  await resetDb(db.store);
 });
 
 async function seedPending(
@@ -36,7 +36,7 @@ async function seedPending(
   end: string,
   purpose = "rapat",
 ): Promise<bigint> {
-  const result = await allocateSlot(db.pool, {
+  const result = await allocateSlot(db.store, {
     roomId,
     pemohonNama: "Rina Kusuma",
     nim: "20260001",
@@ -52,12 +52,12 @@ async function seedPending(
 
 describe("kalender publik", () => {
   it("mengembalikan reservasi aktif dan blokir sesuai rentang serta filter ruang", async () => {
-    const roomA = await seedRoom(db.pool, {
+    const roomA = await seedRoom(db.store, {
       code: "CAL-A",
       name: "Ruang Kalender A",
       policy: "perlu_persetujuan",
     });
-    const roomB = await seedRoom(db.pool, {
+    const roomB = await seedRoom(db.store, {
       code: "CAL-B",
       name: "Ruang Kalender B",
       policy: "perlu_persetujuan",
@@ -68,7 +68,7 @@ describe("kalender publik", () => {
       wita("2027-10-26T09:00:00"),
       wita("2027-10-26T10:00:00"),
     );
-    await approveReservation(db.pool, approvedA);
+    await approveReservation(db.store, approvedA);
 
     await seedPending(
       roomB,
@@ -77,14 +77,14 @@ describe("kalender publik", () => {
       "belajar kelompok",
     );
 
-    await createBlock(db.pool, {
+    await createBlock(db.store, {
       roomId: roomA,
       start: wita("2027-10-26T13:00:00"),
       end: wita("2027-10-26T14:00:00"),
       reason: "Perawatan ruang.",
     });
 
-    const all = await listCalendar(db.pool, {
+    const all = await listCalendar(db.store, {
       from: new Date(wita("2027-10-26T00:00:00")),
       to: new Date(wita("2027-10-27T00:00:00")),
     });
@@ -101,7 +101,7 @@ describe("kalender publik", () => {
       "blokir",
     ]);
 
-    const filtered = await listCalendar(db.pool, {
+    const filtered = await listCalendar(db.store, {
       from: new Date(wita("2027-10-26T00:00:00")),
       to: new Date(wita("2027-10-27T00:00:00")),
       roomId: roomB,
@@ -113,15 +113,15 @@ describe("kalender publik", () => {
   });
 
   it("tidak menampilkan reservasi yang dibatalkan atau ditolak", async () => {
-    const room = await seedRoom(db.pool, { code: "CAL-C", name: "Ruang C" });
+    const room = await seedRoom(db.store, { code: "CAL-C", name: "Ruang C" });
     const cancelled = await seedPending(
       room,
       wita("2027-10-26T09:00:00"),
       wita("2027-10-26T10:00:00"),
     );
-    await cancelReservation(db.pool, cancelled, "Batal.");
+    await cancelReservation(db.store, cancelled, "Batal.");
 
-    const events = await listCalendar(db.pool, {
+    const events = await listCalendar(db.store, {
       from: new Date(wita("2027-10-26T00:00:00")),
       to: new Date(wita("2027-10-27T00:00:00")),
     });
@@ -130,7 +130,7 @@ describe("kalender publik", () => {
   });
 
   it("menyajikan data kalender lewat HTTP tanpa nama atau NIM pemohon", async () => {
-    const room = await seedRoom(db.pool, { code: "CAL-D", name: "Ruang D" });
+    const room = await seedRoom(db.store, { code: "CAL-D", name: "Ruang D" });
     await seedPending(
       room,
       wita("2027-10-26T09:00:00"),

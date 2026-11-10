@@ -9,6 +9,7 @@ import { config } from "../../src/config";
 import { DomainError } from "../../src/domain/errors";
 import { createApp } from "../../src/http/app";
 import {
+  listReservationEvents,
   resetDb,
   seedBlock,
   seedRoom,
@@ -25,7 +26,7 @@ let app: ReturnType<typeof createApp>;
 
 beforeAll(async () => {
   db = await startTestDb();
-  app = createApp({ pool: db.pool, now: () => NOW });
+  app = createApp({ store: db.store, now: () => NOW });
   await app.ready();
 });
 
@@ -35,7 +36,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await resetDb(db.pool);
+  await resetDb(db.store);
 });
 
 async function createPending(
@@ -48,7 +49,7 @@ async function createPending(
     key?: string;
   } = {},
 ): Promise<bigint> {
-  const result = await allocateSlot(db.pool, {
+  const result = await allocateSlot(db.store, {
     roomId,
     pemohonNama: overrides.nama ?? "Rina Kusuma",
     nim: overrides.nim ?? "20260001",
@@ -64,7 +65,7 @@ async function createPending(
 
 describe("admin reservations", () => {
   it("menampilkan pengajuan menunggu beserta pemohon dan ruang", async () => {
-    const room = await seedRoom(db.pool, {
+    const room = await seedRoom(db.store, {
       code: "A.1.2",
       name: "A.1.2 (LECT 1A)",
       type: "kelas",
@@ -76,7 +77,7 @@ describe("admin reservations", () => {
       nim: "20260001",
     });
 
-    const pending = await listReservations(db.pool, "menunggu");
+    const pending = await listReservations(db.store, "menunggu");
 
     expect(pending).toHaveLength(1);
     expect(pending[0]).toMatchObject({
@@ -88,32 +89,29 @@ describe("admin reservations", () => {
   });
 
   it("menyetujui pengajuan dan mencatat audit", async () => {
-    const room = await seedRoom(db.pool, { policy: "perlu_persetujuan" });
+    const room = await seedRoom(db.store, { policy: "perlu_persetujuan" });
     const id = await createPending(room);
 
-    const approved = await approveReservation(db.pool, id);
+    const approved = await approveReservation(db.store, id);
 
     expect(approved.status).toBe("disetujui");
 
-    const approvedList = await listReservations(db.pool, "disetujui");
+    const approvedList = await listReservations(db.store, "disetujui");
     expect(approvedList).toHaveLength(1);
 
-    const event = await db.pool.query(
-      "SELECT dari, ke, alasan FROM reservation_events WHERE reservation_id = $1 ORDER BY id DESC LIMIT 1",
-      [id.toString()],
-    );
-    expect(event.rows[0]).toMatchObject({
-      dari: "menunggu",
-      ke: "disetujui",
+    const event = await listReservationEvents(db.store, id);
+    expect(event.at(-1)).toMatchObject({
+      from: "menunggu",
+      to: "disetujui",
     });
   });
 
   it("menolak pengajuan dengan alasan wajib", async () => {
-    const room = await seedRoom(db.pool, { policy: "perlu_persetujuan" });
+    const room = await seedRoom(db.store, { policy: "perlu_persetujuan" });
     const id = await createPending(room);
 
     const rejected = await rejectReservation(
-      db.pool,
+      db.store,
       id,
       "Ruang dipakai untuk ujian.",
     );
@@ -121,41 +119,41 @@ describe("admin reservations", () => {
     expect(rejected.status).toBe("ditolak");
     expect(rejected.reason).toBe("Ruang dipakai untuk ujian.");
 
-    const rejectedList = await listReservations(db.pool, "ditolak");
+    const rejectedList = await listReservations(db.store, "ditolak");
     expect(rejectedList[0]?.reason).toBe("Ruang dipakai untuk ujian.");
   });
 
   it("menolak penolakan tanpa alasan", async () => {
-    const room = await seedRoom(db.pool, { policy: "perlu_persetujuan" });
+    const room = await seedRoom(db.store, { policy: "perlu_persetujuan" });
     const id = await createPending(room);
 
-    await expect(rejectReservation(db.pool, id, "   ")).rejects.toMatchObject({
+    await expect(rejectReservation(db.store, id, "   ")).rejects.toMatchObject({
       code: "VALIDATION_ERROR",
     });
   });
 
   it("menolak persetujuan kedua untuk pengajuan yang sudah diproses", async () => {
-    const room = await seedRoom(db.pool, { policy: "perlu_persetujuan" });
+    const room = await seedRoom(db.store, { policy: "perlu_persetujuan" });
     const id = await createPending(room);
 
-    await approveReservation(db.pool, id);
+    await approveReservation(db.store, id);
 
-    await expect(approveReservation(db.pool, id)).rejects.toMatchObject({
+    await expect(approveReservation(db.store, id)).rejects.toMatchObject({
       code: "INVALID_STATE",
     });
   });
 
   it("menolak persetujuan bila ruang diblokir setelah pengajuan", async () => {
-    const room = await seedRoom(db.pool, { policy: "perlu_persetujuan" });
+    const room = await seedRoom(db.store, { policy: "perlu_persetujuan" });
     const id = await createPending(room);
     await seedBlock(
-      db.pool,
+      db.store,
       room,
       wita("2026-10-20T09:00:00"),
       wita("2026-10-20T11:00:00"),
     );
 
-    await expect(approveReservation(db.pool, id)).rejects.toMatchObject({
+    await expect(approveReservation(db.store, id)).rejects.toMatchObject({
       code: "SLOT_CONFLICT",
     });
   });
@@ -179,7 +177,7 @@ describe("admin HTTP", () => {
   });
 
   it("menampilkan antrean dengan kode admin", async () => {
-    const room = await seedRoom(db.pool, { policy: "perlu_persetujuan" });
+    const room = await seedRoom(db.store, { policy: "perlu_persetujuan" });
     await createPending(room);
 
     const response = await app.inject({
@@ -194,7 +192,7 @@ describe("admin HTTP", () => {
   });
 
   it("menyetujui lewat HTTP", async () => {
-    const room = await seedRoom(db.pool, { policy: "perlu_persetujuan" });
+    const room = await seedRoom(db.store, { policy: "perlu_persetujuan" });
     const id = await createPending(room);
 
     const response = await app.inject({
@@ -208,7 +206,7 @@ describe("admin HTTP", () => {
   });
 
   it("menolak lewat HTTP dengan alasan", async () => {
-    const room = await seedRoom(db.pool, { policy: "perlu_persetujuan" });
+    const room = await seedRoom(db.store, { policy: "perlu_persetujuan" });
     const id = await createPending(room);
 
     const response = await app.inject({

@@ -1,6 +1,4 @@
 (() => {
-const ADMIN_KEY = "idb-admin-code";
-
 const adminView = document.querySelector("#view-admin");
 const gate = document.querySelector("#gate");
 const dashboard = document.querySelector("#dashboard");
@@ -80,7 +78,7 @@ let liveRefreshTimer = null;
 let liveSource = null;
 
 const state = {
-  code: sessionStorage.getItem(ADMIN_KEY),
+  code: window.IDBDemo?.sessionField("password") ?? null,
   tab: "approval",
   filters: { status: "semua", query: "", date: "" },
   reasonAction: null,
@@ -149,7 +147,7 @@ function focusCurrentTab() {
 }
 
 function clearCode() {
-  sessionStorage.removeItem(ADMIN_KEY);
+  window.IDBDemo?.clearSession();
   state.code = null;
 }
 
@@ -355,7 +353,9 @@ async function loadApproval() {
     }
     showDashboard();
     renderRequests(
-      body.data,
+      window.IDBDemo?.mergeAdminReservations(body.data, {
+        status: "menunggu",
+      }) ?? body.data,
       approvalList,
       approvalEmpty,
       "Tidak ada pengajuan menunggu.",
@@ -390,7 +390,8 @@ async function loadAll() {
       return;
     }
     renderRequests(
-      body.data,
+      window.IDBDemo?.mergeAdminReservations(body.data, state.filters) ??
+        body.data,
       allList,
       allEmpty,
       "Tidak ada reservasi yang cocok dengan filter.",
@@ -521,6 +522,18 @@ function refreshAll() {
 async function approveItem(item, button) {
   button.disabled = true;
   setStatus(`Menyetujui ${item.businessId}…`);
+  if (window.IDBDemo?.isLocal(item.id)) {
+    window.IDBDemo.updateReservation(item.id, {
+      status: "disetujui",
+      reason: null,
+    });
+    announcer.textContent = `Pengajuan ${item.businessId} disetujui.`;
+    await loadStats();
+    await loadCurrentTab();
+    focusCurrentTab();
+    button.disabled = false;
+    return;
+  }
   try {
     const { response, body } = await request(
       `/admin/reservations/${item.id}/approve`,
@@ -578,6 +591,22 @@ async function submitReason(event) {
 
   const action = state.reasonAction;
   if (!action) return;
+
+  if (window.IDBDemo?.isLocal(action.item.id)) {
+    window.IDBDemo.updateReservation(action.item.id, {
+      status: action.mode === "reject" ? "ditolak" : "dibatalkan",
+      reason,
+    });
+    reasonDialog.close();
+    announcer.textContent =
+      action.mode === "reject"
+        ? `Pengajuan ${action.item.businessId} ditolak.`
+        : `Reservasi ${action.item.businessId} dibatalkan.`;
+    await loadStats();
+    await loadCurrentTab();
+    focusCurrentTab();
+    return;
+  }
 
   reasonSubmit.disabled = true;
   try {
@@ -716,7 +745,12 @@ gateForm.addEventListener("submit", async (event) => {
 
   gateSubmit.disabled = true;
   state.code = code;
-  sessionStorage.setItem(ADMIN_KEY, code);
+  window.IDBDemo?.setSession({
+    role: "admin",
+    email: "admin@idbbali.ac.id",
+    nim: null,
+    password: code,
+  });
   await loadStats();
   await loadApproval();
   if (dashboard.hidden) {
@@ -808,6 +842,7 @@ function connectLiveUpdates() {
 }
 
 window.addEventListener("reservation-created", scheduleLiveRefresh);
+window.addEventListener("idb-demo-updated", scheduleLiveRefresh);
 
 window.setInterval(() => {
   if (!state.code || !adminVisible()) return;

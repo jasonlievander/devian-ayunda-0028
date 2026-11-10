@@ -1,85 +1,23 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { createServer } from "node:net";
-import os from "node:os";
-import path from "node:path";
-import EmbeddedPostgres from "embedded-postgres";
-import pg from "pg";
-import { runMigrations } from "../../src/infrastructure/migrate";
+import { MemoryStore } from "../../src/infrastructure/memory-store";
 
 export interface TestDb {
-  pool: pg.Pool;
+  store: MemoryStore;
+  dir: string;
   stop: () => Promise<void>;
 }
 
-async function findFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.unref();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (address === null || typeof address === "string") {
-        server.close();
-        reject(new Error("Tidak dapat menentukan port"));
-        return;
-      }
-      const { port } = address;
-      server.close(() => resolve(port));
-    });
-  });
-}
-
 export async function startTestDb(): Promise<TestDb> {
-  const port = await findFreePort();
-  const databaseDir = await mkdtemp(path.join(os.tmpdir(), "idb-pg-"));
-
-  const server = new EmbeddedPostgres({
-    databaseDir,
-    port,
-    user: "postgres",
-    password: "postgres",
-    persistent: false,
-    authMethod: "password",
-    onLog: () => {},
-    onError: (error) => {
-      console.error(error);
-    },
-  });
-
-  await server.initialise();
-  await server.start();
-
-  const pool = new pg.Pool({
-    connectionString: `postgres://postgres:postgres@127.0.0.1:${port}/postgres`,
-    max: 20,
-  });
-
-  await runMigrations(pool);
+  const store = await MemoryStore.open();
 
   return {
-    pool,
-    stop: async () => {
-      await pool.end();
-      await server.stop();
-      await rm(databaseDir, { recursive: true, force: true });
-    },
+    store,
+    dir: "",
+    stop: async () => {},
   };
 }
 
-export async function resetDb(pool: pg.Pool): Promise<void> {
-  await pool.query(`
-    TRUNCATE TABLE
-      reservation_events,
-      reservations,
-      reservation_daily_seq,
-      room_blocks,
-      room_facilities,
-      org_members,
-      organizations,
-      rooms,
-      users
-    RESTART IDENTITY CASCADE
-  `);
+export async function resetDb(store: MemoryStore): Promise<void> {
+  await store.reset();
 }
 
 export interface SeedUserOptions {
@@ -88,16 +26,27 @@ export interface SeedUserOptions {
 }
 
 export async function seedUser(
-  pool: pg.Pool,
+  store: MemoryStore,
   options: SeedUserOptions = {},
 ): Promise<bigint> {
   const role = options.role ?? "mahasiswa";
-  const email = options.email ?? `${role}-${Date.now()}-${Math.random()}@idbbali.ac.id`;
-  const result = await pool.query<{ id: string }>(
-    "INSERT INTO users (nama, email, peran) VALUES ($1, $2, $3) RETURNING id",
-    [`Pengguna ${role}`, email, role],
-  );
-  return BigInt(result.rows[0]!.id);
+  const email =
+    options.email ??
+    `${role}-${Date.now()}-${Math.random()}@idbbali.ac.id`;
+
+  return store.transact((state) => {
+    const id = (state.nextId.users ?? 0) + 1;
+    state.nextId.users = id;
+    state.users.push({
+      id,
+      nama: `Pengguna ${role}`,
+      email,
+      peran: role,
+      status: "aktif",
+      nim: null,
+    });
+    return BigInt(id);
+  });
 }
 
 export interface SeedRoomOptions {
@@ -111,59 +60,143 @@ export interface SeedRoomOptions {
 }
 
 export async function seedRoom(
-  pool: pg.Pool,
+  store: MemoryStore,
   options: SeedRoomOptions = {},
 ): Promise<bigint> {
-  const result = await pool.query<{ id: string }>(
-    `INSERT INTO rooms (kode, nama, tipe, kapasitas, kebijakan, aktif, allowed_roles)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     RETURNING id`,
-    [
-      options.code ?? `R-${Date.now()}-${Math.random()}`,
-      options.name ?? options.code ?? "Ruang Uji",
-      options.type ?? "diskusi",
-      options.capacity === undefined ? 10 : options.capacity,
-      options.policy ?? "terbuka",
-      options.active ?? true,
-      options.allowedRoles ?? [],
-    ],
-  );
-  return BigInt(result.rows[0]!.id);
+  return store.transact((state) => {
+    const id = (state.nextId.rooms ?? 0) + 1;
+    state.nextId.rooms = id;
+    state.rooms.push({
+      id,
+      kode: options.code ?? `R-${Date.now()}-${Math.random()}`,
+      nama: options.name ?? options.code ?? "Ruang Uji",
+      tipe: options.type ?? "diskusi",
+      kapasitas:
+        options.capacity === undefined ? 10 : options.capacity,
+      kebijakan: options.policy ?? "terbuka",
+      aktif: options.active ?? true,
+      allowedRoles: options.allowedRoles ?? [],
+    });
+    return BigInt(id);
+  });
 }
 
 export async function seedBlock(
-  pool: pg.Pool,
+  store: MemoryStore,
   roomId: bigint,
   start: string,
   end: string,
   reason = "Kuliah",
 ): Promise<void> {
-  await pool.query(
-    `INSERT INTO room_blocks (room_id, mulai, selesai, alasan, sumber)
-     VALUES ($1, $2, $3, $4, 'kuliah')`,
-    [roomId.toString(), start, end, reason],
-  );
+  await store.transact((state) => {
+    const id = (state.nextId.blocks ?? 0) + 1;
+    state.nextId.blocks = id;
+    state.blocks.push({
+      id,
+      roomId: Number(roomId),
+      start: new Date(start).toISOString(),
+      end: new Date(end).toISOString(),
+      reason,
+      source: "kuliah",
+      createdAt: new Date().toISOString(),
+    });
+  });
 }
 
 export async function seedOrganization(
-  pool: pg.Pool,
+  store: MemoryStore,
   name = "BEM IDB",
 ): Promise<bigint> {
-  const result = await pool.query<{ id: string }>(
-    "INSERT INTO organizations (nama, jenis) VALUES ($1, 'BEM') RETURNING id",
-    [name],
-  );
-  return BigInt(result.rows[0]!.id);
+  return store.transact((state) => {
+    const id = (state.nextId.organizations ?? 0) + 1;
+    state.nextId.organizations = id;
+    state.organizations.push({ id, nama: name, jenis: "BEM" });
+    return BigInt(id);
+  });
 }
 
 export async function addOrgMember(
-  pool: pg.Pool,
+  store: MemoryStore,
   userId: bigint,
   orgId: bigint,
 ): Promise<void> {
-  await pool.query(
-    `INSERT INTO org_members (user_id, org_id, jabatan, periode)
-     VALUES ($1, $2, 'Ketua', '2026/2027')`,
-    [userId.toString(), orgId.toString()],
+  await store.transact((state) => {
+    const id = (state.nextId.orgMembers ?? 0) + 1;
+    state.nextId.orgMembers = id;
+    state.orgMembers.push({
+      id,
+      userId: Number(userId),
+      orgId: Number(orgId),
+      jabatan: "Ketua",
+      periode: "2026/2027",
+    });
+  });
+}
+
+export async function insertReservationDirect(
+  store: MemoryStore,
+  input: {
+    businessId: string;
+    roomId: bigint;
+    userId: bigint;
+    start: string;
+    end: string;
+    idempotencyKey?: string;
+    status?: "menunggu" | "disetujui" | "berlangsung";
+  },
+): Promise<bigint> {
+  return store.transact((state) => {
+    const id = (state.nextId.reservations ?? 0) + 1;
+    state.nextId.reservations = id;
+    const timestamp = new Date().toISOString();
+    state.reservations.push({
+      id,
+      businessId: input.businessId,
+      roomId: Number(input.roomId),
+      userId: Number(input.userId),
+      orgId: null,
+      start: new Date(input.start).toISOString(),
+      end: new Date(input.end).toISOString(),
+      purpose: "langsung",
+      participants: 5,
+      status: input.status ?? "disetujui",
+      idempotencyKey: input.idempotencyKey ?? `direct-${id}`,
+      requestHash: "hash",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    return BigInt(id);
+  });
+}
+
+export async function countReservations(store: MemoryStore): Promise<number> {
+  return store.read((state) => state.reservations.length);
+}
+
+export async function findUserByNim(
+  store: MemoryStore,
+  nim: string,
+): Promise<{ nama: string; nim: string | null } | undefined> {
+  return store.read((state) => {
+    const user = state.users.find((candidate) => candidate.nim === nim);
+    return user === undefined
+      ? undefined
+      : { nama: user.nama, nim: user.nim };
+  });
+}
+
+export async function listReservationEvents(
+  store: MemoryStore,
+  reservationId: bigint,
+): Promise<Array<{ from: string | null; to: string; reason: string | null }>> {
+  return store.read((state) =>
+    state.events
+      .filter((event) => event.reservationId === Number(reservationId))
+      .sort((a, b) => a.id - b.id)
+      .map((event) => ({
+        from: event.from,
+        to: event.to,
+        reason: event.reason,
+      })),
   );
 }

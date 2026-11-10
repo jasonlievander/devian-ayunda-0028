@@ -50,11 +50,11 @@ const roomSelect = document.querySelector("#room");
 const namaInput = document.querySelector("#nama");
 const nimInput = document.querySelector("#nim");
 if (
-  sessionStorage.getItem("idb-role") === "form" &&
-  sessionStorage.getItem("idb-form-nim") !== null &&
+  window.IDBDemo?.sessionField("role") === "form" &&
+  window.IDBDemo?.sessionField("nim") !== null &&
   nimInput.value === ""
 ) {
-  nimInput.value = sessionStorage.getItem("idb-form-nim") ?? "";
+  nimInput.value = window.IDBDemo?.sessionField("nim") ?? "";
 }
 const dateInput = document.querySelector("#date");
 const startSelect = document.querySelector("#start");
@@ -618,6 +618,23 @@ form.addEventListener("submit", async (event) => {
       return;
     }
 
+    window.IDBDemo?.saveReservation({
+      localId: `local-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      serverId: body.data.id,
+      businessId: body.data.businessId,
+      roomId: String(room.id),
+      roomCode: room.code,
+      roomName: room.name,
+      start: body.data.start,
+      end: body.data.end,
+      purpose: body.data.purpose,
+      participants: body.data.participants,
+      status: body.data.status,
+      pemohonNama: body.data.pemohonNama ?? submitted.nama,
+      nim: body.data.nim ?? submitted.nim,
+      createdAt: new Date().toISOString(),
+      reason: null,
+    });
     renderSlip(body.data, body.replayed, submitted);
     window.dispatchEvent(
       new CustomEvent("reservation-created", {
@@ -639,7 +656,7 @@ resetButton.addEventListener("click", () => {
   result.hidden = true;
   idleState.hidden = false;
   form.reset();
-  nimInput.value = sessionStorage.getItem("idb-form-nim") ?? "";
+  nimInput.value = window.IDBDemo?.sessionField("nim") ?? "";
   roomSelect.selectedIndex = 0;
   purposeSelect.value = "belajar kelompok";
   participantsInput.value = "6";
@@ -729,6 +746,12 @@ const viewReservation = document.querySelector("#view-reservation");
 const viewAdmin = document.querySelector("#view-admin");
 const navLinks = [...document.querySelectorAll(".site-nav a")];
 function renderShellView(moveFocus = false) {
+  if (
+    location.pathname.replace(/\/+$/, "") === "/admin" &&
+    location.hash !== "#admin"
+  ) {
+    history.replaceState(null, "", "/#admin");
+  }
   const showAdmin = location.hash === "#admin";
   viewReservation.hidden = showAdmin;
   viewAdmin.hidden = !showAdmin;
@@ -767,10 +790,7 @@ function renderShellView(moveFocus = false) {
 }
 
 logoutSession?.addEventListener("click", () => {
-  sessionStorage.removeItem("idb-role");
-  sessionStorage.removeItem("idb-admin-code");
-  sessionStorage.removeItem("idb-form-email");
-  sessionStorage.removeItem("idb-form-nim");
+  window.IDBDemo?.clearSession();
   location.assign("/login");
 });
 

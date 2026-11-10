@@ -4,27 +4,27 @@
       kicker: "Akses mahasiswa",
       title: "Masuk ke formulir",
       lede: "Gunakan email dan NIM akun mahasiswa untuk mengajukan peminjaman ruang.",
-      hint: "Gunakan akun demo yang diberikan petugas.",
+      hint: "Demo mahasiswa: mahasiswa@idbbali.ac.id / NIM 123456.",
       submit: "Masuk ke formulir",
       visualLede:
         "Ajukan slot, cek kalender, dan kelola peminjaman ruang kampus dalam satu alur.",
       photo: "/assets/login-campus.webp",
       photoAlt: "Gedung kampus IDB Bali dengan papan nama IDB Bali",
       credit: "Gedung kampus IDB Bali · dokumentasi kampus",
-      demo: "Akses demo internal. Gunakan akun mahasiswa yang diberikan petugas.",
+      demo: "Mode demo tanpa database. Data reservasi tersimpan di browser Anda.",
     },
     admin: {
       kicker: "Akses petugas",
       title: "Masuk ke panel petugas",
       lede: "Kelola antrean, setujui peminjaman, dan blokir ruang.",
-      hint: "Khusus petugas Sarana Prasarana.",
+      hint: "Demo petugas: admin@idbbali.ac.id / password idbbali.",
       submit: "Masuk ke panel",
       visualLede:
         "Antrean real-time, persetujuan, dan kontrol ruang dalam satu panel.",
       photo: "/assets/login-campus.webp",
       photoAlt: "Gedung kampus IDB Bali dengan papan nama IDB Bali",
       credit: "Gedung kampus IDB Bali · dokumentasi kampus",
-      demo: "Akses demo internal. Hubungi admin sistem bila kode akses tidak berlaku.",
+      demo: "Mode demo tanpa database. Sesi login tersimpan di browser Anda.",
     },
   };
 
@@ -104,9 +104,9 @@
     formCredentials.hidden = role !== "form";
     adminCredentials.hidden = role !== "admin";
     clearError();
-    emailInput.value = "";
-    nimInput.value = "";
-    passwordInput.value = "";
+    emailInput.value = role === "form" ? "mahasiswa@idbbali.ac.id" : "";
+    nimInput.value = role === "form" ? "123456" : "";
+    passwordInput.value = role === "admin" ? "idbbali" : "";
     passwordInput.type = "password";
     toggleButton.textContent = "Lihat";
     toggleButton.setAttribute("aria-pressed", "false");
@@ -194,16 +194,12 @@
         return;
       }
 
-      sessionStorage.setItem("idb-role", state.role);
-      if (state.role === "form") {
-        sessionStorage.setItem("idb-form-email", payload.email);
-        sessionStorage.setItem("idb-form-nim", payload.nim);
-        sessionStorage.removeItem("idb-admin-code");
-      } else {
-        sessionStorage.setItem("idb-admin-code", payload.password);
-        sessionStorage.removeItem("idb-form-email");
-        sessionStorage.removeItem("idb-form-nim");
-      }
+      window.IDBDemo?.setSession({
+        role: state.role,
+        email: state.role === "form" ? payload.email : "admin@idbbali.ac.id",
+        nim: state.role === "form" ? payload.nim : null,
+        password: state.role === "admin" ? payload.password : null,
+      });
       location.assign(
         state.role === "admin" ? "/#admin" : "/#reservation",
       );

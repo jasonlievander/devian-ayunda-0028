@@ -1,5 +1,9 @@
-import type pg from "pg";
 import { validationError } from "../domain/errors";
+import {
+  ACTIVE_STATUSES,
+  overlaps,
+  type MemoryStore,
+} from "../infrastructure/memory-store";
 
 export type CalendarEventKind = "reservasi" | "blokir";
 export type CalendarEventStatus =
@@ -28,20 +32,8 @@ export interface CalendarQuery {
 
 const MAX_RANGE_MS = 92 * 24 * 60 * 60 * 1000;
 
-interface CalendarRow {
-  kind: CalendarEventKind;
-  id: string;
-  room_id: string;
-  room_code: string;
-  room_name: string;
-  mulai: Date;
-  selesai: Date;
-  title: string;
-  status: CalendarEventStatus;
-}
-
 export async function listCalendar(
-  pool: pg.Pool,
+  store: MemoryStore,
   query: CalendarQuery,
 ): Promise<CalendarEvent[]> {
   const from = query.from.getTime();
@@ -56,48 +48,81 @@ export async function listCalendar(
     throw validationError("Rentang kalender maksimal 92 hari", "to");
   }
 
-  const params: Array<string> = [
-    new Date(from).toISOString(),
-    new Date(to).toISOString(),
-  ];
-  const roomFilter =
-    query.roomId === undefined ? "" : "AND room_id = $3";
-  if (query.roomId !== undefined) {
-    params.push(query.roomId.toString());
-  }
+  return store.read((state) => {
+    const roomFilter =
+      query.roomId === undefined ? undefined : Number(query.roomId);
 
-  const result = await pool.query<CalendarRow>(
-    `SELECT 'reservasi' AS kind, r.id AS id, r.room_id AS room_id,
-            rm.kode AS room_code, rm.nama AS room_name,
-            r.mulai AS mulai, r.selesai AS selesai,
-            r.keperluan AS title, r.status::text AS status
-     FROM reservations r
-     JOIN rooms rm ON rm.id = r.room_id AND rm.aktif
-     WHERE r.status IN ('menunggu', 'disetujui', 'berlangsung')
-       AND tstzrange(r.mulai, r.selesai, '[)') && tstzrange($1::timestamptz, $2::timestamptz, '[)')
-       ${roomFilter}
-     UNION ALL
-     SELECT 'blokir' AS kind, b.id AS id, b.room_id AS room_id,
-            rm.kode AS room_code, rm.nama AS room_name,
-            b.mulai AS mulai, b.selesai AS selesai,
-            'Ruang diblokir' AS title, 'blokir' AS status
-     FROM room_blocks b
-     JOIN rooms rm ON rm.id = b.room_id AND rm.aktif
-     WHERE tstzrange(b.mulai, b.selesai, '[)') && tstzrange($1::timestamptz, $2::timestamptz, '[)')
-       ${roomFilter}
-     ORDER BY mulai ASC, kind ASC, id ASC`,
-    params,
-  );
+    const reservations: CalendarEvent[] = state.reservations
+      .filter((reservation) => {
+        if (!ACTIVE_STATUSES.includes(reservation.status)) {
+          return false;
+        }
+        if (
+          roomFilter !== undefined &&
+          reservation.roomId !== roomFilter
+        ) {
+          return false;
+        }
+        const room = state.rooms.find(
+          (candidate) => candidate.id === reservation.roomId,
+        );
+        if (room === undefined || !room.aktif) {
+          return false;
+        }
+        return overlaps(reservation.start, reservation.end, from, to);
+      })
+      .map((reservation) => {
+        const room = state.rooms.find(
+          (candidate) => candidate.id === reservation.roomId,
+        )!;
+        return {
+          kind: "reservasi" as const,
+          id: BigInt(reservation.id),
+          roomId: BigInt(reservation.roomId),
+          roomCode: room.kode,
+          roomName: room.nama,
+          start: new Date(reservation.start),
+          end: new Date(reservation.end),
+          title: reservation.purpose,
+          status: reservation.status as CalendarEventStatus,
+        };
+      });
 
-  return result.rows.map((row) => ({
-    kind: row.kind,
-    id: BigInt(row.id),
-    roomId: BigInt(row.room_id),
-    roomCode: row.room_code,
-    roomName: row.room_name,
-    start: new Date(row.mulai),
-    end: new Date(row.selesai),
-    title: row.title,
-    status: row.status,
-  }));
+    const blocks: CalendarEvent[] = state.blocks
+      .filter((block) => {
+        if (roomFilter !== undefined && block.roomId !== roomFilter) {
+          return false;
+        }
+        const room = state.rooms.find(
+          (candidate) => candidate.id === block.roomId,
+        );
+        if (room === undefined || !room.aktif) {
+          return false;
+        }
+        return overlaps(block.start, block.end, from, to);
+      })
+      .map((block) => {
+        const room = state.rooms.find(
+          (candidate) => candidate.id === block.roomId,
+        )!;
+        return {
+          kind: "blokir" as const,
+          id: BigInt(block.id),
+          roomId: BigInt(block.roomId),
+          roomCode: room.kode,
+          roomName: room.nama,
+          start: new Date(block.start),
+          end: new Date(block.end),
+          title: "Ruang diblokir",
+          status: "blokir" as const,
+        };
+      });
+
+    return [...reservations, ...blocks].sort((a, b) => {
+      const diff = a.start.getTime() - b.start.getTime();
+      if (diff !== 0) return diff;
+      if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1;
+      return Number(a.id - b.id);
+    });
+  });
 }

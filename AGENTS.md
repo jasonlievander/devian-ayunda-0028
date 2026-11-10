@@ -18,41 +18,42 @@ Sumber kebenaran:
 ## Stack
 
 - TypeScript (strict), Node.js 20+
-- PostgreSQL 17 (ekstensi `btree_gist` untuk exclusion constraint)
-- `pg` untuk akses database
+- Mode demo tanpa database: penyimpanan in-memory berisi seed
+  (`src/infrastructure/demo-seed.ts`) + reservasi baru & sesi login di
+  `localStorage` browser
 - Fastify untuk HTTP
 - Vitest untuk unit/integration test
-- `embedded-postgres` untuk test database (tanpa Docker)
+- Tanpa database eksternal
 
 ## Perintah
 
 ```bash
 npm install
 npm run typecheck          # tsc --noEmit
-npm test                   # semua test (unit + integration, embedded PostgreSQL)
+npm test                   # semua test (unit + integration)
 npm run test:unit          # hanya unit
-npm run test:integration   # hanya integration (butuh/embedded PostgreSQL)
+npm run test:integration   # hanya integration
 npm run test:watch         # watch mode
-npm run db:migrate         # jalankan migrasi ke DATABASE_URL
+npm run build              # tsc --noEmit
 npm run dev                # jalankan HTTP server
 ```
 
-Test integration memakai `embedded-postgres`; tidak perlu database eksternal.
-Untuk menjalankan aplikasi/dev, sediakan `DATABASE_URL` (lihat `.env.example`).
+Test integration memakai penyimpanan in-memory; tidak perlu database eksternal.
+Aplikasi dev berjalan tanpa variabel lingkungan wajib (lihat `.env.example`).
 
 ## Struktur
 
 ```
 docs/                  PRD, spesifikasi data
-db/migrations/         SQL migrasi (urutan 001, 002, ...)
+api/index.ts           entri serverless Vercel
 src/config.ts          konfigurasi & policy default
 src/domain/            aturan murni (waktu, validasi, error)
 src/application/       use case (alokasi slot) + port
-src/infrastructure/    repository PostgreSQL
+src/infrastructure/    MemoryStore + seed demo (ruang, akun, reservasi)
 src/http/              Fastify app & error mapping
-tests/unit/            test domain tanpa DB
-tests/integration/     test repository/constraint dengan PostgreSQL
-tests/helpers/         startup embedded PostgreSQL, seed, reset
+tests/unit/            test domain tanpa I/O
+tests/integration/     test service dengan MemoryStore
+tests/helpers/         startup MemoryStore, seed, reset
 ```
 
 ## Aturan bisnis yang tidak boleh dilanggar
@@ -66,7 +67,8 @@ tests/helpers/         startup embedded PostgreSQL, seed, reset
   pada ruang yang sama.
 - **BR-03:** `peserta <= kapasitas`; batas diterima, `+1` ditolak.
 - **BR-07:** blok jadwal kuliah/blokir petugas mengalahkan reservasi.
-- Jaminan anti-bentrok wajib di level database, bukan hanya validasi aplikasi.
+- Jaminan anti-bentrok wajib di level penyimpanan (MemoryStore memvalidasi
+  irisan saat transaksi), bukan hanya validasi aplikasi.
 
 ## Default keputusan yang dipakai sementara
 
@@ -111,9 +113,8 @@ Bila pemilik produk memberi keputusan berbeda, ubah konfigurasi + test +
 - TypeScript strict; hindari `any` di domain.
 - Aturan bisnis murni di `src/domain` (tanpa I/O) agar mudah diuji.
 - Waktu selalu dinormalisasi ke UTC; konversi WITA hanya di boundary.
-- Semua mutasi reservasi dalam transaksi.
-- Petakan error database: `23P01` -> `SLOT_CONFLICT`, `23505` idempotency ->
-  replay/mismatch.
+- Semua mutasi reservasi dalam transaksi `MemoryStore`.
+- MemoryStore memvalidasi bentrok slot dan idempotensi sebelum menyimpan.
 - Jangan menambah fitur di luar scope tugas (mis. notifikasi, UI) tanpa
   persetujuan.
 - Jangan menambah komentar kecuali diminta.
@@ -132,7 +133,7 @@ Jangan menulis kode produksi sebelum ada test yang gagal.
 
 ## Status implementasi
 
-- Fase alokasi slot sudah ada: domain, migrasi, service, `POST /reservations`,
+- Fase alokasi slot sudah ada: domain, penyimpanan in-memory, service, `POST /reservations`,
   dan UI pengajuan di `public/` (disajikan di `/`).
 - Formulir dan panel petugas berada di satu halaman: `#reservation` untuk
   formulir, `#admin` untuk panel. `/admin` diarahkan ke `/#admin`.
@@ -156,12 +157,12 @@ Jangan menulis kode produksi sebelum ada test yang gagal.
   `idbbali.ac.id/fasilitas-kampus` (arsip 17 Okt 2026).
 - Kapasitas yang tidak dipublikasikan disimpan `NULL` dan diverifikasi
   petugas; jangan mengarang angka. Hanya Lab Komputer yang punya kapasitas
-  resmi (maks. 36). Katalog belum terhubung ke database.
-- Login demo ada di `/login`: formulir memakai email
-  `akumahasiswa2gmail.com` dan NIM `123456` (`FORM_EMAIL`, `FORM_NIM`);
-  panel petugas memakai password `idbbali` (`ADMIN_CODE`). Keduanya
-  divalidasi server lewat `POST /auth/login`. Sesi disimpan di
-  `sessionStorage`; ini gerbang demo, bukan auth produksi. Form tetap meminta **nama + NIM** yang diketik; server
+  resmi (maks. 36). Katalog belum terhubung ke penyimpanan.
+- Login demo ada di `/login`: akun mahasiswa `mahasiswa@idbbali.ac.id` /
+  NIM `123456`, akun petugas `admin@idbbali.ac.id` / password `idbbali`.
+  Keduanya divalidasi server lewat `POST /auth/login`. Sesi disimpan di
+  `localStorage` lewat `public/demo-store.js`; ini gerbang demo, bukan auth
+  produksi. Form tetap meminta **nama + NIM** yang diketik; server
   membuat/menemukan user sintetis berdasarkan NIM
   (`{nim}@idbbali.ac.id`, peran mahasiswa). Header `x-user-id` masih diterima
   untuk kompatibilitas test/API, tetapi jangan dipakai di produksi.
@@ -181,7 +182,7 @@ Jangan menulis kode produksi sebelum ada test yang gagal.
 
 ## Definisi selesai (fase alokasi)
 
-- Migrasi berjalan di PostgreSQL bersih.
+- File penyimpanan teks berhasil diinisialisasi dari kosong.
 - Test unit: BR-01, BR-03.
 - Test integration: sukses, konflik, konkurensi, idempotensi (termasuk retry
   bersamaan), kapasitas, lead time, jam operasional, status Menunggu.

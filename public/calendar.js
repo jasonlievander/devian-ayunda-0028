@@ -569,7 +569,8 @@
       const body = await response.json();
       if (id !== requestId) return;
 
-      events = Array.isArray(body.data) ? body.data : [];
+      const serverEvents = Array.isArray(body.data) ? body.data : [];
+      events = window.IDBDemo?.mergeCalendarEvents(serverEvents) ?? serverEvents;
       render(range);
       statusEl.textContent =
         events.length === 0
@@ -675,6 +676,7 @@
   }
 
   window.addEventListener("reservation-created", scheduleLiveRefresh);
+  window.addEventListener("idb-demo-updated", scheduleLiveRefresh);
   window.addEventListener("hashchange", () => {
     if (location.hash === "#kalender") load();
   });

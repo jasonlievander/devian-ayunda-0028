@@ -2,7 +2,6 @@ import { timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
-import type pg from "pg";
 import {
   approveReservation,
   cancelReservation,
@@ -27,10 +26,11 @@ import {
 import { listCalendar, type CalendarEvent } from "../application/calendar";
 import { config } from "../config";
 import { DomainError, validationError } from "../domain/errors";
+import type { MemoryStore } from "../infrastructure/memory-store";
 import { EventHub } from "./event-hub";
 
 export interface AppDependencies {
-  pool: pg.Pool;
+  store: MemoryStore;
   now?: () => Date;
 }
 
@@ -231,7 +231,7 @@ export function createApp(deps: AppDependencies): FastifyInstance {
   });
 
   app.register(fastifyStatic, {
-    root: path.resolve(import.meta.dirname, "../../public"),
+    root: path.resolve(process.cwd(), "public"),
     prefix: "/",
   });
 
@@ -251,38 +251,64 @@ export function createApp(deps: AppDependencies): FastifyInstance {
     if (role !== "form" && role !== "admin") {
       throw validationError("Role login tidak valid", "role");
     }
+    const email = typeof input.email === "string" ? input.email.trim() : "";
+    const nim = typeof input.nim === "string" ? input.nim.trim() : "";
+    const password = typeof input.password === "string" ? input.password : "";
+    const users = await deps.store.read((state) => state.users);
+
     if (role === "form") {
-      const email = input.email;
-      const nim = input.nim;
-      if (typeof email !== "string" || email.trim() === "") {
+      if (email === "") {
         throw validationError("Email wajib diisi", "email");
       }
-      if (typeof nim !== "string" || nim.trim() === "") {
-        throw validationError("NIM wajib diisi", "nim");
+      if (nim === "" && password === "") {
+        throw validationError("NIM atau password wajib diisi", "nim");
       }
-      const normalizedEmail = email.trim().toLowerCase();
+      const normalizedEmail = email.toLowerCase();
       const expectedEmail = config.formEmail.trim().toLowerCase();
       const acceptedEmails = expectedEmail.includes("@")
         ? [expectedEmail]
         : [expectedEmail, expectedEmail.replace(/gmail\.com$/, "@gmail.com")];
-      const emailMatches = acceptedEmails.some((candidate) =>
+      const legacyEmail = acceptedEmails.some((candidate) =>
         safeEqual(normalizedEmail, candidate),
       );
-      if (!emailMatches || !safeEqual(nim.trim(), config.formNim)) {
-        throw new DomainError(
-          "UNAUTHORIZED",
-          "Email atau NIM salah",
-          401,
-        );
+      const legacyMatch =
+        legacyEmail &&
+        ((nim !== "" && safeEqual(nim, config.formNim)) ||
+          (nim === "" && password !== "" && safeEqual(password, config.formNim)));
+
+      const seeded = users.find(
+        (user) =>
+          user.email.toLowerCase() === normalizedEmail &&
+          user.status === "aktif",
+      );
+      const seededMatch =
+        seeded !== undefined &&
+        ((nim !== "" && seeded.nim !== null && safeEqual(nim, seeded.nim)) ||
+          (password !== "" &&
+            seeded.password !== undefined &&
+            safeEqual(password, seeded.password)));
+
+      if (!legacyMatch && !seededMatch) {
+        throw new DomainError("UNAUTHORIZED", "Email atau NIM salah", 401);
       }
       return reply.send({ data: { role } });
     }
 
-    const password = input.password;
-    if (typeof password !== "string" || password === "") {
+    if (password === "") {
       throw validationError("Password wajib diisi", "password");
     }
-    if (!safeEqual(password, config.adminCode)) {
+    const normalizedEmail = email.toLowerCase();
+    const codeMatch = safeEqual(password, config.adminCode);
+    const staffMatch = users.some(
+      (user) =>
+        ["admin", "petugas"].includes(user.peran) &&
+        user.status === "aktif" &&
+        user.password !== undefined &&
+        safeEqual(password, user.password) &&
+        (normalizedEmail === "" ||
+          safeEqual(normalizedEmail, user.email.toLowerCase())),
+    );
+    if (!codeMatch && !staffMatch) {
       throw new DomainError("UNAUTHORIZED", "Password salah", 401);
     }
     return reply.send({ data: { role } });
@@ -322,12 +348,12 @@ export function createApp(deps: AppDependencies): FastifyInstance {
 
   app.get("/admin/stats", async (request, reply) => {
     requireAdmin(headerValue(request.headers["x-admin-code"]));
-    return reply.send({ data: serializeStats(await getStats(deps.pool)) });
+    return reply.send({ data: serializeStats(await getStats(deps.store)) });
   });
 
   app.get("/admin/rooms", async (request, reply) => {
     requireAdmin(headerValue(request.headers["x-admin-code"]));
-    const data = await listAdminRooms(deps.pool);
+    const data = await listAdminRooms(deps.store);
     return reply.send({ data: data.map(serializeRoom) });
   });
 
@@ -340,7 +366,7 @@ export function createApp(deps: AppDependencies): FastifyInstance {
       date?: string;
     };
     const status = (query.status ?? "menunggu") as AdminFilterStatus;
-    const data = await listReservations(deps.pool, status, {
+    const data = await listReservations(deps.store, status, {
       query: query.q,
       date: query.date,
     });
@@ -350,7 +376,7 @@ export function createApp(deps: AppDependencies): FastifyInstance {
 
   app.get("/admin/blocks", async (request, reply) => {
     requireAdmin(headerValue(request.headers["x-admin-code"]));
-    const data = await listBlocks(deps.pool);
+    const data = await listBlocks(deps.store);
     return reply.send({ data: data.map(serializeBlock) });
   });
 
@@ -362,7 +388,7 @@ export function createApp(deps: AppDependencies): FastifyInstance {
       throw validationError("Body wajib berupa objek JSON");
     }
     const input = body as Record<string, unknown>;
-    const result = await createBlock(deps.pool, {
+    const result = await createBlock(deps.store, {
       roomId: parseId(input.roomId, "roomId"),
       start: parseString(input.start, "start"),
       end: parseString(input.end, "end"),
@@ -385,7 +411,7 @@ export function createApp(deps: AppDependencies): FastifyInstance {
     const query = request.query as { limit?: string };
     const limit = query.limit === undefined ? 50 : Number(query.limit);
     const data = await listEvents(
-      deps.pool,
+      deps.store,
       Number.isFinite(limit) ? limit : 50,
     );
     return reply.send({ data: data.map(serializeEvent) });
@@ -396,7 +422,7 @@ export function createApp(deps: AppDependencies): FastifyInstance {
 
     const params = request.params as { id?: string };
     const id = parseId(params.id, "id");
-    const data = await approveReservation(deps.pool, id);
+    const data = await approveReservation(deps.store, id);
     eventHub.publish("reservation-updated", {
       businessId: data.businessId,
       roomCode: data.roomCode,
@@ -419,7 +445,7 @@ export function createApp(deps: AppDependencies): FastifyInstance {
       (body as Record<string, unknown>).reason,
       "reason",
     );
-    const data = await cancelReservation(deps.pool, id, reason);
+    const data = await cancelReservation(deps.store, id, reason);
     eventHub.publish("reservation-updated", {
       businessId: data.businessId,
       roomCode: data.roomCode,
@@ -442,7 +468,7 @@ export function createApp(deps: AppDependencies): FastifyInstance {
       (body as Record<string, unknown>).reason,
       "reason",
     );
-    const data = await rejectReservation(deps.pool, id, reason);
+    const data = await rejectReservation(deps.store, id, reason);
     eventHub.publish("reservation-updated", {
       businessId: data.businessId,
       roomCode: data.roomCode,
@@ -465,7 +491,7 @@ export function createApp(deps: AppDependencies): FastifyInstance {
         ? undefined
         : BigInt(parseId(query.roomId, "roomId"));
     const data = await listCalendar(
-      deps.pool,
+      deps.store,
       roomId === undefined ? { from, to } : { from, to, roomId },
     );
     return reply.send({ data: data.map(serializeCalendarEvent) });
@@ -513,7 +539,7 @@ export function createApp(deps: AppDependencies): FastifyInstance {
       "specialApproval",
     );
 
-    const result = await allocateSlot(deps.pool, {
+    const result = await allocateSlot(deps.store, {
       userId,
       pemohonNama,
       nim,

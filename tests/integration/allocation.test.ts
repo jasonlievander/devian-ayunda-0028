@@ -3,6 +3,9 @@ import { allocateSlot } from "../../src/application/allocate-slot";
 import { DomainError } from "../../src/domain/errors";
 import {
   addOrgMember,
+  countReservations,
+  insertReservationDirect,
+  listReservationEvents,
   resetDb,
   seedBlock,
   seedOrganization,
@@ -26,7 +29,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await resetDb(db.pool);
+  await resetDb(db.store);
 });
 
 async function expectDomainError(
@@ -70,11 +73,11 @@ function command(overrides: {
 
 describe("alokasi slot", () => {
   it("membuat reservasi disetujui untuk ruang terbuka", async () => {
-    const user = await seedUser(db.pool);
-    const room = await seedRoom(db.pool, { capacity: 10, policy: "terbuka" });
+    const user = await seedUser(db.store);
+    const room = await seedRoom(db.store, { capacity: 10, policy: "terbuka" });
 
     const result = await allocateSlot(
-      db.pool,
+      db.store,
       command({
         userId: user,
         roomId: room,
@@ -88,26 +91,23 @@ describe("alokasi slot", () => {
     expect(result.reservation.status).toBe("disetujui");
     expect(result.reservation.businessId).toMatch(/^RSV-20261019-\d{4,}$/);
 
-    const count = await db.pool.query("SELECT count(*)::int AS total FROM reservations");
-    expect(count.rows[0]!.total).toBe(1);
+    const count = await countReservations(db.store);
+    expect(count).toBe(1);
 
-    const event = await db.pool.query(
-      "SELECT dari, ke FROM reservation_events WHERE reservation_id = $1",
-      [result.reservation.id],
-    );
-    expect(event.rows[0]).toMatchObject({ dari: null, ke: "disetujui" });
+    const event = await listReservationEvents(db.store, result.reservation.id);
+    expect(event[0]).toMatchObject({ from: null, to: "disetujui" });
   });
 
   it("menerima peserta bila kapasitas ruang belum dipublikasikan", async () => {
-    const user = await seedUser(db.pool);
-    const room = await seedRoom(db.pool, {
+    const user = await seedUser(db.store);
+    const room = await seedRoom(db.store, {
       capacity: null,
       type: "lab",
       policy: "perlu_persetujuan",
     });
 
     const result = await allocateSlot(
-      db.pool,
+      db.store,
       command({
         userId: user,
         roomId: room,
@@ -122,12 +122,12 @@ describe("alokasi slot", () => {
   });
 
   it("menolak peserta melebihi kapasitas (BR-03)", async () => {
-    const user = await seedUser(db.pool);
-    const room = await seedRoom(db.pool, { capacity: 10 });
+    const user = await seedUser(db.store);
+    const room = await seedRoom(db.store, { capacity: 10 });
 
     await expectDomainError(
       allocateSlot(
-        db.pool,
+        db.store,
         command({
           userId: user,
           roomId: room,
@@ -141,12 +141,12 @@ describe("alokasi slot", () => {
   });
 
   it("menolak durasi yang bukan kelipatan 30 menit (BR-01)", async () => {
-    const user = await seedUser(db.pool);
-    const room = await seedRoom(db.pool);
+    const user = await seedUser(db.store);
+    const room = await seedRoom(db.store);
 
     await expectDomainError(
       allocateSlot(
-        db.pool,
+        db.store,
         command({
           userId: user,
           roomId: room,
@@ -159,36 +159,36 @@ describe("alokasi slot", () => {
   });
 
   it("menahan slot untuk ruang yang perlu persetujuan", async () => {
-    const userA = await seedUser(db.pool);
-    const userB = await seedUser(db.pool);
-    const room = await seedRoom(db.pool, { policy: "perlu_persetujuan" });
+    const userA = await seedUser(db.store);
+    const userB = await seedUser(db.store);
+    const room = await seedRoom(db.store, { policy: "perlu_persetujuan" });
     const start = wita("2026-10-20T09:00:00");
     const end = wita("2026-10-20T10:00:00");
 
     const result = await allocateSlot(
-      db.pool,
+      db.store,
       command({ userId: userA, roomId: room, start, end }),
     );
     expect(result.reservation.status).toBe("menunggu");
 
     await expectDomainError(
       allocateSlot(
-        db.pool,
+        db.store,
         command({ userId: userB, roomId: room, start, end }),
       ),
       "SLOT_CONFLICT",
     );
 
-    const count = await db.pool.query("SELECT count(*)::int AS total FROM reservations");
-    expect(count.rows[0]!.total).toBe(1);
+    const count = await countReservations(db.store);
+    expect(count).toBe(1);
   });
 
   it("mengizinkan slot berdampingan pada interval half-open", async () => {
-    const user = await seedUser(db.pool);
-    const room = await seedRoom(db.pool);
+    const user = await seedUser(db.store);
+    const room = await seedRoom(db.store);
 
     const first = await allocateSlot(
-      db.pool,
+      db.store,
       command({
         userId: user,
         roomId: room,
@@ -197,7 +197,7 @@ describe("alokasi slot", () => {
       }),
     );
     const second = await allocateSlot(
-      db.pool,
+      db.store,
       command({
         userId: user,
         roomId: room,
@@ -211,8 +211,8 @@ describe("alokasi slot", () => {
   });
 
   it("mengembalikan reservasi yang sama untuk retry dengan kunci idempoten", async () => {
-    const user = await seedUser(db.pool);
-    const room = await seedRoom(db.pool);
+    const user = await seedUser(db.store);
+    const room = await seedRoom(db.store);
     const cmd = command({
       userId: user,
       roomId: room,
@@ -221,19 +221,19 @@ describe("alokasi slot", () => {
       idempotencyKey: "retry-sama",
     });
 
-    const first = await allocateSlot(db.pool, cmd);
-    const second = await allocateSlot(db.pool, cmd);
+    const first = await allocateSlot(db.store, cmd);
+    const second = await allocateSlot(db.store, cmd);
 
     expect(second.replayed).toBe(true);
     expect(second.reservation.businessId).toBe(first.reservation.businessId);
 
-    const count = await db.pool.query("SELECT count(*)::int AS total FROM reservations");
-    expect(count.rows[0]!.total).toBe(1);
+    const count = await countReservations(db.store);
+    expect(count).toBe(1);
   });
 
   it("menolak kunci idempoten yang dipakai dengan payload berbeda", async () => {
-    const user = await seedUser(db.pool);
-    const room = await seedRoom(db.pool);
+    const user = await seedUser(db.store);
+    const room = await seedRoom(db.store);
     const base = {
       userId: user,
       roomId: room,
@@ -242,24 +242,24 @@ describe("alokasi slot", () => {
       idempotencyKey: "kunci-konflik",
     };
 
-    await allocateSlot(db.pool, command({ ...base, participants: 5 }));
+    await allocateSlot(db.store, command({ ...base, participants: 5 }));
 
     await expectDomainError(
-      allocateSlot(db.pool, command({ ...base, participants: 6 })),
+      allocateSlot(db.store, command({ ...base, participants: 6 })),
       "IDEMPOTENCY_MISMATCH",
     );
   });
 
   it("hanya satu yang berhasil pada pengajuan bersamaan untuk slot sama (RV-03)", async () => {
-    const userA = await seedUser(db.pool);
-    const userB = await seedUser(db.pool);
-    const room = await seedRoom(db.pool);
+    const userA = await seedUser(db.store);
+    const userB = await seedUser(db.store);
+    const room = await seedRoom(db.store);
     const start = wita("2026-10-19T10:30:00");
     const end = wita("2026-10-19T11:30:00");
 
     const results = await Promise.allSettled([
-      allocateSlot(db.pool, command({ userId: userA, roomId: room, start, end })),
-      allocateSlot(db.pool, command({ userId: userB, roomId: room, start, end })),
+      allocateSlot(db.store, command({ userId: userA, roomId: room, start, end })),
+      allocateSlot(db.store, command({ userId: userB, roomId: room, start, end })),
     ]);
 
     const fulfilled = results.filter((result) => result.status === "fulfilled");
@@ -270,21 +270,21 @@ describe("alokasi slot", () => {
     expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(DomainError);
     expect((rejected[0] as PromiseRejectedResult).reason.code).toBe("SLOT_CONFLICT");
 
-    const count = await db.pool.query("SELECT count(*)::int AS total FROM reservations");
-    expect(count.rows[0]!.total).toBe(1);
+    const count = await countReservations(db.store);
+    expect(count).toBe(1);
   });
 
   it("tidak ada reservasi ganda pada 100 request serentak untuk satu slot (RV-03)", async () => {
     const users = await Promise.all(
-      Array.from({ length: 100 }, () => seedUser(db.pool)),
+      Array.from({ length: 100 }, () => seedUser(db.store)),
     );
-    const room = await seedRoom(db.pool);
+    const room = await seedRoom(db.store);
     const start = wita("2026-10-19T10:30:00");
     const end = wita("2026-10-19T11:30:00");
 
     const results = await Promise.allSettled(
       users.map((userId) =>
-        allocateSlot(db.pool, command({ userId, roomId: room, start, end })),
+        allocateSlot(db.store, command({ userId, roomId: room, start, end })),
       ),
     );
 
@@ -298,13 +298,13 @@ describe("alokasi slot", () => {
       expect((result as PromiseRejectedResult).reason.code).toBe("SLOT_CONFLICT");
     }
 
-    const count = await db.pool.query("SELECT count(*)::int AS total FROM reservations");
-    expect(count.rows[0]!.total).toBe(1);
+    const count = await countReservations(db.store);
+    expect(count).toBe(1);
   });
 
   it("tidak membuat reservasi ganda saat retry bersamaan dengan kunci sama (RV-05)", async () => {
-    const user = await seedUser(db.pool);
-    const room = await seedRoom(db.pool);
+    const user = await seedUser(db.store);
+    const room = await seedRoom(db.store);
     const cmd = command({
       userId: user,
       roomId: room,
@@ -313,19 +313,19 @@ describe("alokasi slot", () => {
       idempotencyKey: "retry-bersamaan",
     });
 
-    const results = await Promise.all([allocateSlot(db.pool, cmd), allocateSlot(db.pool, cmd)]);
+    const results = await Promise.all([allocateSlot(db.store, cmd), allocateSlot(db.store, cmd)]);
 
     expect(results[0].reservation.businessId).toBe(results[1].reservation.businessId);
 
-    const count = await db.pool.query("SELECT count(*)::int AS total FROM reservations");
-    expect(count.rows[0]!.total).toBe(1);
+    const count = await countReservations(db.store);
+    expect(count).toBe(1);
   });
 
   it("menolak reservasi yang menabrak blok jadwal kuliah (BR-07)", async () => {
-    const user = await seedUser(db.pool);
-    const room = await seedRoom(db.pool);
+    const user = await seedUser(db.store);
+    const room = await seedRoom(db.store);
     await seedBlock(
-      db.pool,
+      db.store,
       room,
       wita("2026-10-19T10:00:00"),
       wita("2026-10-19T12:00:00"),
@@ -333,7 +333,7 @@ describe("alokasi slot", () => {
 
     await expectDomainError(
       allocateSlot(
-        db.pool,
+        db.store,
         command({
           userId: user,
           roomId: room,
@@ -346,11 +346,11 @@ describe("alokasi slot", () => {
   });
 
   it("membatasi kuota pribadi menjadi 2 reservasi aktif (BR-05)", async () => {
-    const user = await seedUser(db.pool);
-    const room = await seedRoom(db.pool, { type: "diskusi" });
+    const user = await seedUser(db.store);
+    const room = await seedRoom(db.store, { type: "diskusi" });
 
     await allocateSlot(
-      db.pool,
+      db.store,
       command({
         userId: user,
         roomId: room,
@@ -359,7 +359,7 @@ describe("alokasi slot", () => {
       }),
     );
     await allocateSlot(
-      db.pool,
+      db.store,
       command({
         userId: user,
         roomId: room,
@@ -370,7 +370,7 @@ describe("alokasi slot", () => {
 
     await expectDomainError(
       allocateSlot(
-        db.pool,
+        db.store,
         command({
           userId: user,
           roomId: room,
@@ -383,12 +383,12 @@ describe("alokasi slot", () => {
   });
 
   it("menolak reservasi pribadi lebih dari 3 jam pada ruang diskusi (BR-05)", async () => {
-    const user = await seedUser(db.pool);
-    const room = await seedRoom(db.pool, { type: "diskusi" });
+    const user = await seedUser(db.store);
+    const room = await seedRoom(db.store, { type: "diskusi" });
 
     await expectDomainError(
       allocateSlot(
-        db.pool,
+        db.store,
         command({
           userId: user,
           roomId: room,
@@ -401,9 +401,9 @@ describe("alokasi slot", () => {
   });
 
   it("membatasi ruang khusus berdasarkan peran (RS-02)", async () => {
-    const mahasiswa = await seedUser(db.pool, { role: "mahasiswa" });
-    const dosen = await seedUser(db.pool, { role: "dosen" });
-    const room = await seedRoom(db.pool, {
+    const mahasiswa = await seedUser(db.store, { role: "mahasiswa" });
+    const dosen = await seedUser(db.store, { role: "dosen" });
+    const room = await seedRoom(db.store, {
       policy: "khusus",
       allowedRoles: ["dosen"],
     });
@@ -412,26 +412,26 @@ describe("alokasi slot", () => {
 
     await expectDomainError(
       allocateSlot(
-        db.pool,
+        db.store,
         command({ userId: mahasiswa, roomId: room, start, end }),
       ),
       "FORBIDDEN",
     );
 
     const result = await allocateSlot(
-      db.pool,
+      db.store,
       command({ userId: dosen, roomId: room, start, end }),
     );
     expect(result.reservation.status).toBe("menunggu");
   });
 
   it("menolak ruang nonaktif", async () => {
-    const user = await seedUser(db.pool);
-    const room = await seedRoom(db.pool, { active: false });
+    const user = await seedUser(db.store);
+    const room = await seedRoom(db.store, { active: false });
 
     await expectDomainError(
       allocateSlot(
-        db.pool,
+        db.store,
         command({
           userId: user,
           roomId: room,
@@ -444,12 +444,12 @@ describe("alokasi slot", () => {
   });
 
   it("menolak hari Minggu tanpa persetujuan khusus (BR-04)", async () => {
-    const user = await seedUser(db.pool);
-    const room = await seedRoom(db.pool);
+    const user = await seedUser(db.store);
+    const room = await seedRoom(db.store);
 
     await expectDomainError(
       allocateSlot(
-        db.pool,
+        db.store,
         command({
           userId: user,
           roomId: room,
@@ -462,11 +462,11 @@ describe("alokasi slot", () => {
   });
 
   it("mengizinkan hari Minggu dengan persetujuan petugas", async () => {
-    const petugas = await seedUser(db.pool, { role: "petugas" });
-    const room = await seedRoom(db.pool);
+    const petugas = await seedUser(db.store, { role: "petugas" });
+    const room = await seedRoom(db.store);
 
     const result = await allocateSlot(
-      db.pool,
+      db.store,
       command({
         userId: petugas,
         roomId: room,
@@ -480,12 +480,12 @@ describe("alokasi slot", () => {
   });
 
   it("menolak persetujuan khusus dari peran non-petugas", async () => {
-    const mahasiswa = await seedUser(db.pool);
-    const room = await seedRoom(db.pool);
+    const mahasiswa = await seedUser(db.store);
+    const room = await seedRoom(db.store);
 
     await expectDomainError(
       allocateSlot(
-        db.pool,
+        db.store,
         command({
           userId: mahasiswa,
           roomId: room,
@@ -499,12 +499,12 @@ describe("alokasi slot", () => {
   });
 
   it("menolak ruang persetujuan tanpa lead time 1 hari kerja (BR-06)", async () => {
-    const user = await seedUser(db.pool);
-    const room = await seedRoom(db.pool, { policy: "perlu_persetujuan" });
+    const user = await seedUser(db.store);
+    const room = await seedRoom(db.store, { policy: "perlu_persetujuan" });
 
     await expectDomainError(
       allocateSlot(
-        db.pool,
+        db.store,
         command({
           userId: user,
           roomId: room,
@@ -517,12 +517,12 @@ describe("alokasi slot", () => {
   });
 
   it("menerapkan lead time 3 hari kerja untuk acara", async () => {
-    const user = await seedUser(db.pool);
+    const user = await seedUser(db.store);
 
-    const tooSoon = await seedRoom(db.pool, { code: "AULA-1", type: "aula" });
+    const tooSoon = await seedRoom(db.store, { code: "AULA-1", type: "aula" });
     await expectDomainError(
       allocateSlot(
-        db.pool,
+        db.store,
         command({
           userId: user,
           roomId: tooSoon,
@@ -534,9 +534,9 @@ describe("alokasi slot", () => {
       "VALIDATION_ERROR",
     );
 
-    const onTime = await seedRoom(db.pool, { code: "AULA-2", type: "aula" });
+    const onTime = await seedRoom(db.store, { code: "AULA-2", type: "aula" });
     const result = await allocateSlot(
-      db.pool,
+      db.store,
       command({
         userId: user,
         roomId: onTime,
@@ -549,14 +549,14 @@ describe("alokasi slot", () => {
   });
 
   it("mengizinkan reservasi organisasi melewati kuota pribadi", async () => {
-    const user = await seedUser(db.pool);
-    const org = await seedOrganization(db.pool);
-    await addOrgMember(db.pool, user, org);
-    const room = await seedRoom(db.pool, { type: "diskusi" });
+    const user = await seedUser(db.store);
+    const org = await seedOrganization(db.store);
+    await addOrgMember(db.store, user, org);
+    const room = await seedRoom(db.store, { type: "diskusi" });
 
     for (const day of ["20", "21", "22"]) {
       const result = await allocateSlot(
-        db.pool,
+        db.store,
         command({
           userId: user,
           roomId: room,
@@ -570,41 +570,29 @@ describe("alokasi slot", () => {
   });
 });
 
-describe("jaminan level database", () => {
+describe("jaminan level penyimpanan", () => {
   it("menolak irisan walau insert dilakukan langsung tanpa service", async () => {
-    const user = await seedUser(db.pool);
-    const room = await seedRoom(db.pool);
+    const user = await seedUser(db.store);
+    const room = await seedRoom(db.store);
 
-    await db.pool.query(
-      `INSERT INTO reservations
-        (business_id, room_id, user_id, mulai, selesai, keperluan, peserta,
-         status, kunci_idempoten, request_hash)
-       VALUES ($1, $2, $3, $4, $5, 'langsung', 5, 'disetujui', $6, 'hash')`,
-      [
-        "RSV-TEST-0001",
-        room.toString(),
-        user.toString(),
-        wita("2026-10-19T10:00:00"),
-        wita("2026-10-19T11:00:00"),
-        "langsung-1",
-      ],
-    );
+    await insertReservationDirect(db.store, {
+      businessId: "RSV-TEST-0001",
+      roomId: room,
+      userId: user,
+      start: wita("2026-10-19T10:00:00"),
+      end: wita("2026-10-19T11:00:00"),
+      idempotencyKey: "langsung-1",
+    });
 
     await expect(
-      db.pool.query(
-        `INSERT INTO reservations
-          (business_id, room_id, user_id, mulai, selesai, keperluan, peserta,
-           status, kunci_idempoten, request_hash)
-         VALUES ($1, $2, $3, $4, $5, 'langsung', 5, 'disetujui', $6, 'hash')`,
-        [
-          "RSV-TEST-0002",
-          room.toString(),
-          user.toString(),
-          wita("2026-10-19T10:30:00"),
-          wita("2026-10-19T11:30:00"),
-          "langsung-2",
-        ],
-      ),
-    ).rejects.toMatchObject({ code: "23P01" });
+      insertReservationDirect(db.store, {
+        businessId: "RSV-TEST-0002",
+        roomId: room,
+        userId: user,
+        start: wita("2026-10-19T10:30:00"),
+        end: wita("2026-10-19T11:30:00"),
+        idempotencyKey: "langsung-2",
+      }),
+    ).rejects.toMatchObject({ code: "SLOT_CONFLICT" });
   });
 });
