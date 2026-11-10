@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -231,10 +232,13 @@ export function createApp(deps: AppDependencies): FastifyInstance {
     sseClients.clear();
   });
 
-  app.register(fastifyStatic, {
-    root: path.resolve(process.cwd(), "public"),
-    prefix: "/",
-  });
+  const publicRoot = path.resolve(process.cwd(), "public");
+  if (existsSync(publicRoot)) {
+    app.register(fastifyStatic, {
+      root: publicRoot,
+      prefix: "/",
+    });
+  }
 
   app.get("/health", async () => ({ status: "ok" }));
 

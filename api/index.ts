@@ -21,6 +21,21 @@ export default async function handler(
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
-  const app = await getApp();
-  app.server.emit("request", request, response);
+  try {
+    const app = await getApp();
+    app.server.emit("request", request, response);
+  } catch (error) {
+    appPromise = null;
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("FUNCTION_INIT_ERROR", error);
+    if (!response.headersSent) {
+      response.statusCode = 500;
+      response.setHeader("content-type", "application/json; charset=utf-8");
+      response.end(
+        JSON.stringify({
+          error: { code: "FUNCTION_INIT_ERROR", message },
+        }),
+      );
+    }
+  }
 }
