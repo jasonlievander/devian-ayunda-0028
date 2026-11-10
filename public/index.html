@@ -12,7 +12,14 @@
     <script>
       (() => {
         try {
-          const role = sessionStorage.getItem("idb-role");
+          let role = sessionStorage.getItem("idb-role");
+          if (role !== "form" && role !== "admin") {
+            const raw = localStorage.getItem("idb-demo-session");
+            role = raw ? JSON.parse(raw)?.role : null;
+          }
+          if (role !== "form" && role !== "admin") {
+            role = localStorage.getItem("idb-role");
+          }
           if (role !== "form" && role !== "admin") {
             location.replace("/login");
           }
