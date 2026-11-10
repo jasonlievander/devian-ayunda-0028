@@ -12,7 +12,7 @@
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
     "test:watch": "vitest",
-    "build": "tsc --noEmit",
+    "build": "tsc --noEmit && esbuild src/serverless.ts --bundle --platform=node --format=esm --packages=external --outfile=api/index.mjs",
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts"
   },
@@ -22,6 +22,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5"

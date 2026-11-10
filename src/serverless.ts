@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { FastifyInstance } from "fastify";
-import { createApp } from "../src/http/app";
-import { MemoryStore } from "../src/infrastructure/memory-store";
+import { createApp } from "./http/app";
+import { MemoryStore } from "./infrastructure/memory-store";
 
 let appPromise: Promise<FastifyInstance> | null = null;
 
@@ -21,6 +21,7 @@ export default async function handler(
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
+  response.setHeader("x-idb-runtime", "demo-serverless-v3");
   try {
     const app = await getApp();
     app.server.emit("request", request, response);
